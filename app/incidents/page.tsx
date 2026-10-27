@@ -2,10 +2,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 type Officer = {
   user_id: number;
   full_name: string;
-  department_id: number;
+  department_id: number | string;
   department_name: string;
 };
 
@@ -14,6 +15,7 @@ type Incident = {
   title: string;
   description?: string;
   category_name?: string;
+  department_id?: number | string;
   department_name?: string;
   location?: string;
   priority?: string;
@@ -26,10 +28,13 @@ export default function IncidentsPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [officerId, setOfficerId] = useState("2");
+  const [officerId, setOfficerId] = useState("");
   const [officers, setOfficers] = useState<Officer[]>([]);
   const [selectedIncident, setSelectedIncident] = useState("");
   const [assignMessage, setAssignMessage] = useState("");
+  const [updatingIncidentId, setUpdatingIncidentId] = useState<number | null>(
+    null
+  );
 
 useEffect(() => {
   async function loadOfficers() {
@@ -43,11 +48,10 @@ useEffect(() => {
 
       setOfficers(data.officers);
 
-      if (data.officers.length > 0) {
-        setOfficerId(String(data.officers[0].user_id));
-      }
     } catch (err) {
-      console.error("Failed to load officers:", err);
+      setError(
+        err instanceof Error ? err.message : "Failed to load officers."
+      );
     }
   }
 
@@ -60,7 +64,6 @@ async function assignOfficer() {
     setAssignMessage("Please select an incident first.");
     return;
   }
-
   try {
     setAssignMessage("Assigning officer...");
 
@@ -72,7 +75,6 @@ async function assignOfficer() {
       body: JSON.stringify({
         incident_id: Number(selectedIncident),
         officer_id: Number(officerId),
-        assigned_by: 3,
       }),
     });
 
@@ -89,15 +91,48 @@ async function assignOfficer() {
     const refresh = await fetch("/api/incidents");
     const refreshedData = await refresh.json();
 
-    const rows = Array.isArray(refreshedData)
-      ? refreshedData
-      : refreshedData.incidents ?? refreshedData.data ?? [];
+    if (!refresh.ok || !refreshedData.success) {
+      throw new Error(refreshedData.message || "Unable to refresh incidents.");
+    }
 
-    setIncidents(rows);
+    setIncidents(refreshedData.incidents);
   } catch (err) {
     setAssignMessage(
       err instanceof Error ? err.message : "Assignment failed."
     );
+  }
+}
+
+async function updateIncidentStatus(incidentId: number, status: string) {
+  setUpdatingIncidentId(incidentId);
+  setAssignMessage("");
+
+  try {
+    const response = await fetch(`/api/incidents/status?id=${incidentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.message || "Unable to update incident status.");
+    }
+
+    setIncidents((current) =>
+      current.map((incident) =>
+        incident.incident_id === incidentId
+          ? { ...incident, status }
+          : incident
+      )
+    );
+    setAssignMessage(`Incident #${incidentId} marked ${status.replace("_", " ")}.`);
+  } catch (err) {
+    setAssignMessage(
+      err instanceof Error ? err.message : "Unable to update incident status."
+    );
+  } finally {
+    setUpdatingIncidentId(null);
   }
 }
 
@@ -129,12 +164,23 @@ async function assignOfficer() {
     loadIncidents();
   }, []);
 
+  const selectedIncidentRecord = incidents.find(
+    (incident) => String(incident.incident_id) === selectedIncident
+  );
+  const availableOfficers = selectedIncidentRecord
+    ? officers.filter(
+        (officer) =>
+          String(officer.department_id) ===
+          String(selectedIncidentRecord.department_id)
+      )
+    : [];
+
   return (
     <main className="min-h-screen bg-gray-100 p-6 text-gray-900 md:p-10">
       <div className="mx-auto max-w-7xl">
-        <a href="/" className="text-sm text-blue-600 hover:underline">
-          ← Back to Overview
-        </a>
+        <Link href="/admin/departments" className="text-sm text-blue-600 hover:underline">
+          Manage departments →
+        </Link>
 
         <div className="mb-8 mt-4">
           <h1 className="text-3xl font-bold">Incident Management</h1>
@@ -156,7 +202,20 @@ async function assignOfficer() {
       </label>
       <select
         value={selectedIncident}
-        onChange={(e) => setSelectedIncident(e.target.value)}
+        onChange={(e) => {
+          const incidentId = e.target.value;
+          setSelectedIncident(incidentId);
+          const incident = incidents.find(
+            (item) => String(item.incident_id) === incidentId
+          );
+          const matchingOfficer = incident
+            ? officers.find(
+                (item) =>
+                  String(item.department_id) === String(incident.department_id)
+              )
+            : undefined;
+          setOfficerId(matchingOfficer ? String(matchingOfficer.user_id) : "");
+        }}
         className="w-full rounded-lg border p-3"
       >
         <option value="">Choose an incident</option>
@@ -178,10 +237,17 @@ async function assignOfficer() {
       <select
         value={officerId}
         onChange={(e) => setOfficerId(e.target.value)}
+        disabled={!selectedIncident}
         className="w-full rounded-lg border p-3"
       >
-        <option value="">Choose an officer</option>
-{officers.map((officer) => (
+        <option value="">
+          {!selectedIncident
+            ? "Choose an incident first"
+            : availableOfficers.length
+              ? "Choose an officer"
+              : "No officers in this department"}
+        </option>
+{availableOfficers.map((officer) => (
   <option key={officer.user_id} value={String(officer.user_id)}>
     {officer.full_name} — {officer.department_name}
   </option>
@@ -192,7 +258,9 @@ async function assignOfficer() {
     <div className="flex items-end">
       <button
         onClick={assignOfficer}
-        disabled={loading}
+        disabled={
+          loading || !selectedIncident || !availableOfficers.length || !officerId
+        }
         className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
       >
         Assign Officer
@@ -235,6 +303,7 @@ async function assignOfficer() {
                   <th className="p-4">Location</th>
                   <th className="p-4">Priority</th>
                   <th className="p-4">Status</th>
+                  <th className="p-4">Update status</th>
                 </tr>
               </thead>
               <tbody>
@@ -259,6 +328,26 @@ async function assignOfficer() {
                       <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium capitalize text-blue-700">
                         {incident.status.replace("_", " ")}
                       </span>
+                    </td>
+                    <td className="p-4">
+                      <select
+                        aria-label={`Update status for incident ${incident.incident_id}`}
+                        value={incident.status}
+                        disabled={updatingIncidentId === incident.incident_id}
+                        onChange={(event) =>
+                          void updateIncidentStatus(
+                            incident.incident_id,
+                            event.target.value
+                          )
+                        }
+                        className="rounded-lg border p-2"
+                      >
+                        <option value="pending">Pending</option>
+                        <option value="assigned">Assigned</option>
+                        <option value="in_progress">In progress</option>
+                        <option value="resolved">Resolved</option>
+                        <option value="rejected">Rejected</option>
+                      </select>
                     </td>
                   </tr>
                 ))}

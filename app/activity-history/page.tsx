@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
 type HistoryRecord = {
   history_id: number;
@@ -15,24 +16,40 @@ type HistoryRecord = {
   changed_at: string;
 };
 
+type Account = {
+  full_name: string;
+  role: "resident" | "officer" | "admin";
+};
+
 export default function ActivityHistoryPage() {
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
     async function loadHistory() {
       try {
-        const response = await fetch("/api/activity-history");
-        const data = await response.json();
+        const [response, accountResponse] = await Promise.all([
+          fetch("/api/activity-history"),
+          fetch("/api/auth/me"),
+        ]);
+        const [data, accountData] = await Promise.all([
+          response.json(),
+          accountResponse.json(),
+        ]);
 
         if (!response.ok || !data.success) {
           throw new Error(
             data.message || "Unable to load activity history."
           );
         }
+        if (!accountResponse.ok || !accountData.success) {
+          throw new Error(accountData.message || "Unable to load your account.");
+        }
 
         setHistory(data.history);
+        setAccount({ ...accountData.account, role: accountData.role });
       } catch (err) {
         setError(
           err instanceof Error
@@ -78,31 +95,34 @@ export default function ActivityHistoryPage() {
 
         <p className="nav-label">WORKSPACE</p>
 
-        <a className="nav-item" href="/">
+        <Link className="nav-item" href={account?.role === "admin" ? "/admin" : "/civic"}>
           <span>▦</span> Overview
-        </a>
+        </Link>
 
-        <a className="nav-item" href="/">
-          <span>◎</span> Incidents
-        </a>
+        {account?.role === "admin" && (
+          <>
+            <Link className="nav-item" href="/admin/incidents">
+              <span>◎</span> Incidents
+            </Link>
+            <Link className="nav-item" href="/admin/departments">
+              <span>⌖</span> Departments
+            </Link>
+          </>
+        )}
 
-        <a className="nav-item" href="/">
-          <span>⌖</span> Departments
-        </a>
-
-        <a
+        <Link
           className="nav-item active"
-          href="/activity-history"
+          href={account?.role === "admin" ? "/admin/activity-history" : "/civic/activity-history"}
           aria-current="page"
         >
-          <span>◷</span> Activity history
-        </a>
+          <span>◷</span> {account?.role === "admin" ? "Activity history" : "My progress"}
+        </Link>
 
         <div className="sidebar-bottom">
-          <div className="avatar">SA</div>
+          <div className="avatar">{account?.role === "admin" ? "AD" : "CV"}</div>
           <div>
-            <strong>System Admin</strong>
-            <p>Administrator</p>
+            <strong>{account?.full_name || "Account"}</strong>
+            <p>{account?.role === "admin" ? "Administrator" : "Civic user"}</p>
           </div>
         </div>
       </aside>
@@ -110,8 +130,10 @@ export default function ActivityHistoryPage() {
       <section className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">CIVIC MANAGEMENT</p>
-            <h1>Activity History</h1>
+            <p className="eyebrow">
+              {account?.role === "admin" ? "ADMIN PORTAL" : "CIVIC PORTAL"}
+            </p>
+            <h1>{account?.role === "admin" ? "Activity History" : "My incident progress"}</h1>
           </div>
 
           <div className="topbar-right">
@@ -122,11 +144,18 @@ export default function ActivityHistoryPage() {
 
         <section className="welcome">
           <div>
-            <p className="welcome-label">AUDIT TRAIL</p>
-            <h2>Every change, recorded.</h2>
+            <p className="welcome-label">
+              {account?.role === "admin" ? "ADMIN AUDIT TRAIL" : "YOUR REPORT UPDATES"}
+            </p>
+            <h2>
+              {account?.role === "admin"
+                ? "Every change, recorded."
+                : "See what is happening with your reports."}
+            </h2>
             <p>
-              Track incident reports, status transitions, and
-              administrative activity.
+              {account?.role === "admin"
+                ? "Track incident reports, status transitions, and administrative activity."
+                : "Only updates for incidents reported by your account are shown here."}
             </p>
           </div>
           <div className="welcome-symbol">◷</div>
@@ -189,13 +218,15 @@ export default function ActivityHistoryPage() {
             <div>
               <h2>Audit trail</h2>
               <p>
-                Activity records retrieved directly from PostgreSQL
+                {account?.role === "admin"
+                  ? "All incident activity"
+                  : "Progress updates for your own incident reports"}
               </p>
             </div>
 
-            <a className="back-link" href="/">
+            <Link className="back-link" href={account?.role === "admin" ? "/admin" : "/civic"}>
               ← Back to dashboard
-            </a>
+            </Link>
           </div>
 
           {loading && (
@@ -220,7 +251,7 @@ export default function ActivityHistoryPage() {
                     <th>ACTIVITY</th>
                     <th>INCIDENT</th>
                     <th>STATUS CHANGE</th>
-                    <th>CHANGED BY</th>
+                    {account?.role === "admin" && <th>CHANGED BY</th>}
                     <th>DATE & TIME</th>
                   </tr>
                 </thead>
@@ -271,12 +302,14 @@ export default function ActivityHistoryPage() {
                         </div>
                       </td>
 
-                      <td>
-                        {item.changed_by_name || "Unknown user"}
-                        <div className="incident-meta">
-                          User ID: {item.changed_by}
-                        </div>
-                      </td>
+                      {account?.role === "admin" && (
+                        <td>
+                          {item.changed_by_name || "Unknown user"}
+                          <div className="incident-meta">
+                            User ID: {item.changed_by}
+                          </div>
+                        </td>
+                      )}
 
                       <td>{formatDate(item.changed_at)}</td>
                     </tr>

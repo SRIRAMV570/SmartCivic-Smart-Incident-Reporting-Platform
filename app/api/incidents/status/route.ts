@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import pool from "@/lib/db";
+import { authenticateRequest } from "@/lib/auth/authenticate";
 
 const allowedStatuses = [
   "pending",
@@ -11,9 +12,11 @@ const allowedStatuses = [
 ];
 
 export async function PATCH(
-  request: Request,
-  context: { params: Promise<{ }> }
+  request: Request
 ) {
+  const auth = await authenticateRequest(request, ["admin"]);
+  if (auth instanceof NextResponse) return auth;
+
   const client = await pool.connect();
 
   try {
@@ -68,6 +71,19 @@ export async function PATCH(
       });
     }
 
+    const actor = await client.query(
+      "SELECT user_id FROM users WHERE auth_account_id = $1",
+      [auth.userId]
+    );
+
+    if (actor.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        { success: false, message: "Your account profile was not found." },
+        { status: 403 }
+      );
+    }
+
     await client.query(
       `UPDATE incidents
        SET status = $1, updated_at = CURRENT_TIMESTAMP
@@ -83,7 +99,7 @@ export async function PATCH(
         incidentId,
         oldStatus,
         newStatus,
-        3,
+        actor.rows[0].user_id,
         `Status changed from ${oldStatus} to ${newStatus}`,
       ]
     );

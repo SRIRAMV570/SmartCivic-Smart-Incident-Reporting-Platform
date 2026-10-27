@@ -1,10 +1,15 @@
 
 import { NextResponse } from "next/server";
 import pool from "@/lib/db";
+import { authenticateRequest } from "@/lib/auth/authenticate";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await authenticateRequest(request);
+  if (auth instanceof NextResponse) return auth;
+
   try {
-    const result = await pool.query(`
+    const result = auth.role === "admin"
+      ? await pool.query(`
       SELECT
         i.incident_id,
         i.title,
@@ -14,6 +19,7 @@ export async function GET() {
         i.status,
         i.created_at,
         c.category_name,
+        d.department_id,
         d.department_name,
         u.full_name AS reported_by
       FROM incidents i
@@ -21,7 +27,28 @@ export async function GET() {
       JOIN departments d ON c.department_id = d.department_id
       JOIN users u ON i.reported_by = u.user_id
       ORDER BY i.created_at DESC
-    `);
+    `)
+      : await pool.query(
+          `SELECT
+             i.incident_id,
+             i.title,
+             i.description,
+             i.location,
+             i.priority,
+             i.status,
+             i.created_at,
+             c.category_name,
+             d.department_id,
+             d.department_name,
+             u.full_name AS reported_by
+           FROM incidents i
+           JOIN categories c ON i.category_id = c.category_id
+           JOIN departments d ON c.department_id = d.department_id
+           JOIN users u ON i.reported_by = u.user_id
+           WHERE u.auth_account_id = $1
+           ORDER BY i.created_at DESC`,
+          [auth.userId]
+        );
 
     return NextResponse.json({
       success: true,
@@ -38,6 +65,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await authenticateRequest(request, ["resident"]);
+  if (auth instanceof NextResponse) return auth;
+
   const client = await pool.connect();
 
   try {
@@ -52,7 +82,6 @@ export async function POST(request: Request) {
     const location =
       typeof body.location === "string" ? body.location.trim() : "";
     const categoryId = Number(body.category_id);
-    const reportedBy = Number(body.reported_by);
     const priority =
       typeof body.priority === "string" ? body.priority : "medium";
 
@@ -70,10 +99,9 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!Number.isInteger(categoryId) || categoryId < 1 ||
-        !Number.isInteger(reportedBy) || reportedBy < 1) {
+    if (!Number.isInteger(categoryId) || categoryId < 1) {
       return NextResponse.json(
-        { success: false, message: "A valid category and reporter are required." },
+        { success: false, message: "A valid category is required." },
         { status: 400 }
       );
     }
@@ -87,6 +115,20 @@ export async function POST(request: Request) {
 
     await client.query("BEGIN");
 
+    const reporter = await client.query(
+      "SELECT user_id FROM users WHERE auth_account_id = $1",
+      [auth.userId]
+    );
+
+    if (reporter.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        { success: false, message: "Your account profile was not found." },
+        { status: 403 }
+      );
+    }
+
+    const reportedBy = reporter.rows[0].user_id as number;
     const result = await client.query(
       `INSERT INTO incidents
          (title, description, category_id, reported_by, location, priority)

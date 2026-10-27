@@ -16,6 +16,51 @@ export default function DepartmentsPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [newDepartmentName, setNewDepartmentName] = useState("");
+  const [editingDepartmentId, setEditingDepartmentId] = useState<number | null>(
+    null
+  );
+  const [editingDepartmentName, setEditingDepartmentName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function saveDepartment(
+    method: "POST" | "PATCH",
+    values: { department_name: string; department_id?: number }
+  ) {
+    setSaving(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/departments", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to save department.");
+      }
+
+      if (method === "POST") {
+        setNewDepartmentName("");
+      } else {
+        setEditingDepartmentId(null);
+        setEditingDepartmentName("");
+      }
+
+      const refresh = await fetch("/api/departments");
+      const refreshData = await refresh.json();
+      if (!refresh.ok || !refreshData.success) {
+        throw new Error(refreshData.message || "Unable to refresh departments.");
+      }
+      setDepartments(refreshData.departments);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save department.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     async function loadDepartments() {
@@ -89,7 +134,7 @@ export default function DepartmentsPage() {
         </div>
 
         <Link
-          href="/"
+          href="/admin/incidents"
           style={{
             padding: "12px 18px",
             background: "#5145ed",
@@ -99,7 +144,7 @@ export default function DepartmentsPage() {
             fontWeight: 600,
           }}
         >
-          ← Back to dashboard
+          ← Incident management
         </Link>
       </header>
 
@@ -116,6 +161,62 @@ export default function DepartmentsPage() {
           {error}
         </p>
       )}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveDepartment("POST", {
+            department_name: newDepartmentName,
+          });
+        }}
+        style={{
+          display: "flex",
+          gap: "12px",
+          flexWrap: "wrap",
+          padding: "20px",
+          marginBottom: "24px",
+          border: "1px solid #e5e9f2",
+          borderRadius: "14px",
+          background: "#fff",
+        }}
+      >
+        <label
+          htmlFor="new-department"
+          style={{ alignSelf: "center", fontWeight: 650 }}
+        >
+          Add a department
+        </label>
+        <input
+          id="new-department"
+          value={newDepartmentName}
+          onChange={(event) => setNewDepartmentName(event.target.value)}
+          maxLength={120}
+          required
+          placeholder="Department name"
+          style={{
+            flex: "1 1 220px",
+            minWidth: 0,
+            padding: "11px 12px",
+            border: "1px solid #dfe3ed",
+            borderRadius: "8px",
+          }}
+        />
+        <button
+          type="submit"
+          disabled={saving}
+          style={{
+            padding: "11px 16px",
+            border: 0,
+            borderRadius: "8px",
+            background: "#5145ed",
+            color: "white",
+            fontWeight: 650,
+            cursor: saving ? "wait" : "pointer",
+          }}
+        >
+          {saving ? "Saving..." : "Add department"}
+        </button>
+      </form>
 
       <section
         style={{
@@ -210,6 +311,7 @@ export default function DepartmentsPage() {
                   "Total incidents",
                   "Open incidents",
                   "Resolved",
+                  "Manage",
                 ].map((heading) => (
                   <th
                     key={heading}
@@ -237,7 +339,33 @@ export default function DepartmentsPage() {
                       borderBottom: "1px solid #edf0f6",
                     }}
                   >
-                    {department.department_name}
+                    {editingDepartmentId === department.department_id ? (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveDepartment("PATCH", {
+                            department_id: department.department_id,
+                            department_name: editingDepartmentName,
+                          });
+                        }}
+                      >
+                        <input
+                          value={editingDepartmentName}
+                          onChange={(event) =>
+                            setEditingDepartmentName(event.target.value)
+                          }
+                          maxLength={120}
+                          required
+                          autoFocus
+                          style={{
+                            width: "100%",
+                            padding: "8px",
+                            border: "1px solid #dfe3ed",
+                            borderRadius: "7px",
+                          }}
+                        />
+                      </form>
+                    ) : department.department_name}
                     <div
                       style={{
                         fontSize: "12px",
@@ -276,6 +404,46 @@ export default function DepartmentsPage() {
                     }}
                   >
                     {department.resolved_incidents}
+                  </td>
+
+                  <td
+                    style={{
+                      padding: "20px",
+                      borderBottom: "1px solid #edf0f6",
+                    }}
+                  >
+                    {editingDepartmentId === department.department_id ? (
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() =>
+                            void saveDepartment("PATCH", {
+                              department_id: department.department_id,
+                              department_name: editingDepartmentName,
+                            })
+                          }
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingDepartmentId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingDepartmentId(department.department_id);
+                          setEditingDepartmentName(department.department_name);
+                        }}
+                      >
+                        Rename
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -1,8 +1,12 @@
 
 import { NextResponse } from "next/server";
 import pool from "@/lib/db";
+import { authenticateRequest } from "@/lib/auth/authenticate";
 
 export async function POST(request: Request) {
+  const auth = await authenticateRequest(request, ["admin"]);
+  if (auth instanceof NextResponse) return auth;
+
   const client = await pool.connect();
 
   try {
@@ -10,15 +14,16 @@ export async function POST(request: Request) {
 
     const incidentId = Number(body.incident_id);
     const officerId = Number(body.officer_id);
-    const assignedBy = Number(body.assigned_by ?? 3);
+    const assigner = await client.query(
+      "SELECT user_id FROM users WHERE auth_account_id = $1",
+      [auth.userId]
+    );
 
     if (
       !Number.isInteger(incidentId) ||
       incidentId <= 0 ||
       !Number.isInteger(officerId) ||
-      officerId <= 0 ||
-      !Number.isInteger(assignedBy) ||
-      assignedBy <= 0
+      officerId <= 0
     ) {
       return NextResponse.json(
         { success: false, message: "Valid incident and officer IDs are required." },
@@ -28,8 +33,17 @@ export async function POST(request: Request) {
 
     await client.query("BEGIN");
 
+    if (assigner.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        { success: false, message: "Your account profile was not found." },
+        { status: 403 }
+      );
+    }
+
+    const assignedBy = assigner.rows[0].user_id as number;
     const incident = await client.query(
-      "SELECT incident_id, status FROM incidents WHERE incident_id = $1 FOR UPDATE",
+      "SELECT incident_id, category_id, status FROM incidents WHERE incident_id = $1 FOR UPDATE",
       [incidentId]
     );
 
@@ -44,15 +58,24 @@ export async function POST(request: Request) {
     const officer = await client.query(
       `SELECT user_id, full_name, department_id
        FROM users
-       WHERE user_id = $1`,
-      [officerId]
+       WHERE user_id = $1
+         AND role = 'officer'
+         AND department_id = (
+           SELECT department_id
+           FROM categories
+           WHERE category_id = $2
+         )`,
+      [officerId, incident.rows[0].category_id]
     );
 
     if (officer.rowCount === 0) {
       await client.query("ROLLBACK");
       return NextResponse.json(
-        { success: false, message: "Officer not found." },
-        { status: 404 }
+        {
+          success: false,
+          message: "Choose an officer from the incident's department.",
+        },
+        { status: 400 }
       );
     }
 

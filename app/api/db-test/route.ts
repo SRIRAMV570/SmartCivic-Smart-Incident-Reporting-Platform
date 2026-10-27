@@ -1,8 +1,12 @@
 
 import { NextResponse } from "next/server";
 import pool from "@/lib/db";
+import { authenticateRequest } from "@/lib/auth/authenticate";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await authenticateRequest(request, ["admin"]);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const result = await pool.query(
       "SELECT current_database() AS database, version() AS version"
