@@ -16,6 +16,7 @@ export async function GET(request: Request) {
          u.department_id,
          d.department_name,
          u.is_manager,
+         u.is_active,
          a.email
        FROM users u
        LEFT JOIN departments d
@@ -253,12 +254,17 @@ export async function PATCH(request: Request) {
       ? (body as Record<string, unknown>)
       : {};
   const userId = Number(values.user_id);
+  const updatesCredentials =
+    values.full_name !== undefined ||
+    values.email !== undefined ||
+    values.password !== undefined;
   const fullName =
     typeof values.full_name === "string" ? values.full_name.trim() : "";
   const email =
     typeof values.email === "string" ? values.email.trim().toLowerCase() : "";
   const password =
     typeof values.password === "string" ? values.password : "";
+  const isActive = values.is_active;
 
   if (!Number.isInteger(userId) || userId < 1) {
     return NextResponse.json(
@@ -266,21 +272,40 @@ export async function PATCH(request: Request) {
       { status: 400 }
     );
   }
-  if (fullName.length < 2 || fullName.length > 100) {
+  if (updatesCredentials && (fullName.length < 2 || fullName.length > 100)) {
     return NextResponse.json(
       { success: false, message: "Name must be between 2 and 100 characters." },
       { status: 400 }
     );
   }
-  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (
+    updatesCredentials &&
+    (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+  ) {
     return NextResponse.json(
       { success: false, message: "Enter a valid email address." },
       { status: 400 }
     );
   }
-  if (password && (password.length < 8 || Buffer.byteLength(password, "utf8") > 72)) {
+  if (
+    updatesCredentials &&
+    password &&
+    (password.length < 8 || Buffer.byteLength(password, "utf8") > 72)
+  ) {
     return NextResponse.json(
       { success: false, message: "Password must be at least 8 characters and no more than 72 bytes." },
+      { status: 400 }
+    );
+  }
+  if (isActive !== undefined && typeof isActive !== "boolean") {
+    return NextResponse.json(
+      { success: false, message: "Officer active status must be true or false." },
+      { status: 400 }
+    );
+  }
+  if (!updatesCredentials && isActive === undefined) {
+    return NextResponse.json(
+      { success: false, message: "Provide officer credentials or an active-status update." },
       { status: 400 }
     );
   }
@@ -305,6 +330,31 @@ export async function PATCH(request: Request) {
         { status: 404 }
       );
     }
+    if (isActive !== undefined) {
+      const activeUpdate = await client.query(
+        `UPDATE users
+         SET is_active = $1
+         WHERE user_id = $2
+         RETURNING user_id, is_active`,
+        [isActive, userId]
+      );
+      if (activeUpdate.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return NextResponse.json(
+          { success: false, message: "Officer account not found." },
+          { status: 404 }
+        );
+      }
+    }
+
+    if (!updatesCredentials) {
+      await client.query("COMMIT");
+      return NextResponse.json({
+        success: true,
+        officer: { user_id: userId, is_active: isActive },
+      });
+    }
+
     if (!officer.rows[0].auth_account_id && !password) {
       await client.query("ROLLBACK");
       return NextResponse.json(
@@ -343,7 +393,7 @@ export async function PATCH(request: Request) {
     await client.query("COMMIT");
     return NextResponse.json({
       success: true,
-      officer: { user_id: userId, full_name: fullName, email },
+      officer: { user_id: userId, full_name: fullName, email, is_active: isActive },
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -366,5 +416,62 @@ export async function PATCH(request: Request) {
     );
   } finally {
     client.release();
+  }
+}
+
+export async function DELETE(request: Request) {
+  const auth = await authenticateRequest(request, ["admin"]);
+  if (auth instanceof NextResponse) return auth;
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { success: false, message: "A valid JSON request is required." },
+      { status: 400 }
+    );
+  }
+
+  const values =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const userId = Number(values.user_id);
+  if (!Number.isInteger(userId) || userId < 1) {
+    return NextResponse.json(
+      { success: false, message: "A valid officer ID is required." },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET is_active = false,
+           is_manager = false
+       WHERE user_id = $1
+         AND role = 'officer'
+         AND department_id IS NOT NULL
+       RETURNING user_id, full_name`,
+      [userId]
+    );
+
+    if (result.rowCount === 0) {
+      return NextResponse.json(
+        { success: false, message: "Officer account not found." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Officer access removed. Existing assignment and audit history is preserved.",
+      officer: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Officer deactivation failed:", error);
+    return NextResponse.json(
+      { success: false, message: "Failed to remove officer access." },
+      { status: 500 }
+    );
   }
 }

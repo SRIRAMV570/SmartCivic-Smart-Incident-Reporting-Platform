@@ -1,49 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SmartCivic — Civic Incident Management Platform
 
-## Getting Started
+SmartCivic connects residents reporting local infrastructure issues with administrators and department officers who triage, assign, and resolve reports. It demonstrates role-based workflows backed by PostgreSQL and vector similarity search with Qdrant.
 
-First, run the development server:
+## Technology
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Next.js App Router, React, TypeScript
+- PostgreSQL for relational data and transactional workflows
+- Qdrant for incident-vector storage and cosine-similarity search
+- HTTP-only signed sessions and bcrypt password hashing
+
+## Setup
+
+Install dependencies:
+
+```powershell
+npm ci
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-## Database and authentication setup
-
-The dashboard and account signup/sign-in require PostgreSQL. Add the connection string and a strong session secret to `.env.local` in the project root:
+Configure `.env.local` in the project root:
 
 ```env
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE
 SESSION_SECRET=replace-with-a-random-secret-at-least-32-characters-long
+# QDRANT_API_KEY is optional for local Qdrant; configure it for secured/cloud deployments.
 ```
 
-Generate a session secret with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+The app defaults to `http://localhost:6333` for local Qdrant. Set `QDRANT_URL` explicitly when using a different endpoint.
 
-Apply the account table migration to the same database:
+Generate a session secret with:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Apply the SQL migrations in order to the configured PostgreSQL database:
 
 ```powershell
 psql "$env:DATABASE_URL" -f db\migrations\001_create_auth_accounts.sql
 psql "$env:DATABASE_URL" -f db\migrations\002_create_incident_relations.sql
 psql "$env:DATABASE_URL" -f db\migrations\003_department_officer_managers.sql
+psql "$env:DATABASE_URL" -f db\migrations\004_project_features.sql
+psql "$env:DATABASE_URL" -f db\migrations\005_vector_search_outbox.sql
 ```
 
-Restart the app with `npm run dev`. The app provides three portals on the same Next.js server and shared PostgreSQL database:
+The vector service is Qdrant. Start the included local instance in another terminal:
 
-- Civic users: [http://localhost:3000/civic/login](http://localhost:3000/civic/login) to create an account, report incidents, and track their own reports.
-- Administrators: [http://localhost:3000/admin/login](http://localhost:3000/admin/login) to review incidents, assign department officers, update statuses, manage departments, and view activity history.
-- Department officers and managers: [http://localhost:3000/officer/login](http://localhost:3000/officer/login) to view assigned incidents and update statuses in their department.
+```powershell
+docker compose up -d qdrant
+```
 
-The general [http://localhost:3000/login](http://localhost:3000/login) page also lets users choose a portal. Administrators create a required manager login when adding a department and can configure manager logins for existing departments or add additional officers from Department Management. Each officer has a unique email and password; passwords are hashed before storage and are not retrievable as plaintext. Successful sign-in creates a secure, HTTP-only session cookie. Portal pages and API routes require a valid session, and administrative APIs require an administrator role.
+For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead. Migration `005` creates the SQL sync/outbox table; Qdrant creates the 384-dimensional cosine collection automatically on first use.
 
-New accounts are civic accounts by default; public signup cannot create administrator accounts. To grant administrator access to an account, first register it using the civic signup form, then run this SQL in the project database, replacing the email:
+Start the app:
+
+```powershell
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Portals and capabilities
+
+- Civic users: [http://localhost:3000/civic/login](http://localhost:3000/civic/login) to submit and track reports, edit/delete reports before work starts, and find similar incidents. Editing an assigned report returns it to admin review and clears the previous assignment.
+- Administrators: [http://localhost:3000/admin/login](http://localhost:3000/admin/login) to review reports, assign officers, update status, manage departments and officer accounts, and view activity history.
+- Department officers/managers: [http://localhost:3000/officer/login](http://localhost:3000/officer/login) to view authorized incidents and update statuses.
+
+New public accounts are civic accounts. To grant administrator access, register the account first, then update its role in PostgreSQL:
 
 ```sql
 UPDATE users
@@ -53,23 +75,17 @@ WHERE auth_account_id = (
 );
 ```
 
-The user must sign out and back in through the administrator portal. Civic accounts can submit and track their own reports. Administrators can review all reports, assign officers from the incident's department, manage departments, update incident status, and view the full activity history. Officers see incidents assigned to their account; managers can see incidents in their department. Administrators and officers in the incident's department can update its status. Updates are recorded in the administrator activity history, which refreshes automatically.
+## Vector-search design
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Incident title, description, and location are converted into 384-dimensional vectors by the deterministic `smartcivic-feature-hash-v1` implementation. It uses hashed word and adjacent-word features, so it is dependency-free and provides lexical feature similarity rather than pretrained-language-model semantics. Vectors are stored in Qdrant's `smartcivic_incidents` collection and searched with cosine similarity.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+SQL incident create/edit operations commit a vector-sync outbox row before Qdrant synchronization. If Qdrant is unavailable, the incident remains saved, the UI reports that indexing is pending, and similarity searches retry indexing. Details are in [PROJECT_DOCUMENTATION.md](./PROJECT_DOCUMENTATION.md).
 
-## Learn More
+## Validation and submission
 
-To learn more about Next.js, take a look at the following resources:
+```powershell
+npm run lint
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Before submission, complete the project documentation's team contribution table, add actual application screenshots, and record database-backed test results.

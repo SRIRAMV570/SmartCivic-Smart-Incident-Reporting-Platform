@@ -21,7 +21,7 @@ type OfficerAccount = {
   is_manager: boolean;
 };
 
-const statuses = ["pending", "assigned", "in_progress", "resolved", "rejected"];
+const statuses = ["pending", "assigned", "in_progress", "resolved"];
 
 export default function OfficerPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);

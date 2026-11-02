@@ -13,6 +13,7 @@ export async function GET(request: Request) {
       `SELECT
          d.department_id,
          d.department_name,
+         d.is_active,
          COUNT(DISTINCT i.incident_id)::int AS total_incidents,
          COUNT(DISTINCT i.incident_id)
            FILTER (
@@ -189,20 +190,38 @@ export async function PATCH(request: Request) {
           ? record.department_name.trim()
           : "";
 
-      if (!Number.isInteger(departmentId) || departmentId < 1 ||
-          !name || name.length > 120) {
+      if (!Number.isInteger(departmentId) || departmentId < 1) {
         return NextResponse.json(
-          { success: false, message: "A valid department ID and name are required." },
+          { success: false, message: "A valid department ID is required." },
+          { status: 400 }
+        );
+      }
+
+      if (record.is_active !== undefined && typeof record.is_active !== "boolean") {
+        return NextResponse.json(
+          { success: false, message: "Department active status must be true or false." },
+          { status: 400 }
+        );
+      }
+
+      if (record.department_name !== undefined && (!name || name.length > 120)) {
+        return NextResponse.json(
+          { success: false, message: "Department name must be 1 to 120 characters." },
           { status: 400 }
         );
       }
 
       const result = await pool.query(
         `UPDATE departments
-         SET department_name = $1
-         WHERE department_id = $2
-         RETURNING department_id, department_name`,
-        [name, departmentId]
+         SET department_name = COALESCE($1, department_name),
+             is_active = COALESCE($2, is_active)
+         WHERE department_id = $3
+         RETURNING department_id, department_name, is_active`,
+        [
+          record.department_name === undefined ? null : name,
+          record.is_active === undefined ? null : record.is_active,
+          departmentId,
+        ]
       );
 
       if (result.rowCount === 0) {
@@ -226,5 +245,59 @@ export async function PATCH(request: Request) {
         { success: false, message: "Failed to update department." },
         { status: 500 }
       );
+  }
+}
+
+export async function DELETE(request: Request) {
+  const auth = await authenticateRequest(request, ["admin"]);
+  if (auth instanceof NextResponse) return auth;
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { success: false, message: "A valid JSON request is required." },
+      { status: 400 }
+    );
+  }
+
+  const values =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const departmentId = Number(values.department_id);
+  if (!Number.isInteger(departmentId) || departmentId < 1) {
+    return NextResponse.json(
+      { success: false, message: "A valid department ID is required." },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE departments
+       SET is_active = false
+       WHERE department_id = $1
+       RETURNING department_id, department_name, is_active`,
+      [departmentId]
+    );
+
+    if (result.rowCount === 0) {
+      return NextResponse.json(
+        { success: false, message: "Department not found." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Department deactivated. Its history and records are preserved.",
+      department: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Department deactivation failed:", error);
+    return NextResponse.json(
+      { success: false, message: "Failed to deactivate department." },
+      { status: 500 }
+    );
   }
 }

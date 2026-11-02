@@ -7,6 +7,7 @@ import Link from "next/link";
 
 type Incident = {
   incident_id: number;
+  category_id: number;
   title: string;
   description: string;
   location: string;
@@ -16,6 +17,7 @@ type Incident = {
   category_name: string;
   department_name: string;
   reported_by: string;
+  similarity?: number;
 };
 
 type Category = {
@@ -46,9 +48,12 @@ export default function CivicDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editingIncidentId, setEditingIncidentId] = useState<number | null>(null);
   const [form, setForm] = useState(initialForm);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [similarityResults, setSimilarityResults] = useState<Incident[] | null>(null);
+  const [searching, setSearching] = useState(false);
 
   async function handleLogout() {
     try {
@@ -125,12 +130,14 @@ export default function CivicDashboard() {
     setMessage("");
 
     try {
+      const isEditing = editingIncidentId !== null;
       const response = await fetch("/api/incidents", {
-        method: "POST",
+        method: isEditing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...form,
           category_id: Number(form.category_id),
+          ...(isEditing ? { incident_id: editingIncidentId } : {}),
         }),
       });
 
@@ -142,9 +149,16 @@ export default function CivicDashboard() {
         );
       }
 
-      setMessage("Incident reported successfully!");
+      setMessage(
+        data.message ||
+          (isEditing
+            ? "Incident updated successfully."
+            : "Incident reported successfully!")
+      );
       setForm(initialForm);
       setShowForm(false);
+      setEditingIncidentId(null);
+      setSimilarityResults(null);
       await loadIncidents();
     } catch (err) {
       setMessage(
@@ -157,18 +171,77 @@ export default function CivicDashboard() {
     }
   }
 
+  function editIncident(incident: Incident) {
+    setEditingIncidentId(incident.incident_id);
+    setForm({
+      title: incident.title,
+      description: incident.description,
+      category_id: String(incident.category_id),
+      location: incident.location,
+      priority: incident.priority,
+    });
+    setShowForm(true);
+    setMessage("");
+  }
+
+  async function deleteIncident(incidentId: number) {
+    if (!window.confirm("Delete this incident report? This cannot be undone.")) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/incidents?id=${incidentId}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to delete incident.");
+      }
+      setMessage("Incident deleted successfully.");
+      setSimilarityResults(null);
+      await loadIncidents();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to delete incident.");
+    }
+  }
+
+  async function searchBySimilarity() {
+    if (search.trim().length < 2) {
+      setMessage("Enter at least 2 characters to find similar incidents.");
+      return;
+    }
+
+    setSearching(true);
+    setMessage("");
+    try {
+      const response = await fetch(
+        `/api/incidents/search?q=${encodeURIComponent(search.trim())}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Similarity search failed.");
+      }
+      setSimilarityResults(data.results);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Similarity search failed.");
+    } finally {
+      setSearching(false);
+    }
+  }
+
   const query = search.toLowerCase();
 
-  const filteredIncidents = incidents.filter((incident) => {
-    const matchesSearch = [
-      incident.title,
-      incident.location,
-      incident.category_name,
-      incident.department_name,
-      incident.reported_by,
-    ].some((value) =>
-      value.toLowerCase().includes(query)
-    );
+  const filteredIncidents = (similarityResults ?? incidents).filter((incident) => {
+    const matchesSearch =
+      similarityResults !== null ||
+      [
+        incident.title,
+        incident.location,
+        incident.category_name,
+        incident.department_name,
+        incident.reported_by,
+      ].some((value) => value.toLowerCase().includes(query));
 
     return (
       matchesSearch &&
@@ -307,7 +380,7 @@ export default function CivicDashboard() {
         <section className="incidents-panel">
           <div className="panel-heading">
             <div>
-              <h2>Report an issue</h2>
+              <h2>{editingIncidentId === null ? "Report an issue" : "Edit report"}</h2>
               <p>Submit a civic issue for an administrator to review</p>
             </div>
 
@@ -315,6 +388,10 @@ export default function CivicDashboard() {
               className="report-button"
               onClick={() => {
                 setShowForm(!showForm);
+                if (showForm) {
+                  setEditingIncidentId(null);
+                  setForm(initialForm);
+                }
                 setMessage("");
               }}
             >
@@ -333,7 +410,11 @@ export default function CivicDashboard() {
               className="incident-form"
               onSubmit={handleSubmit}
             >
-              <h3>Report a civic incident</h3>
+              <h3>
+                {editingIncidentId === null
+                  ? "Report a civic incident"
+                  : "Update your report"}
+              </h3>
 
               <label htmlFor="title">Incident title</label>
               <input
@@ -419,8 +500,10 @@ export default function CivicDashboard() {
                 disabled={submitting}
               >
                 {submitting
-                  ? "Submitting..."
-                  : "Submit incident"}
+                  ? "Saving..."
+                  : editingIncidentId === null
+                    ? "Submit incident"
+                    : "Save changes"}
               </button>
             </form>
           )}
@@ -428,7 +511,10 @@ export default function CivicDashboard() {
           <div className="panel-heading">
             <div>
               <h2>Your reported incidents</h2>
-              <p>Track progress updates from the city team</p>
+              <p>
+                Edit or delete reports before work starts. Editing returns the
+                report to admin review for reassignment.
+              </p>
             </div>
             <span className="record-count">
               {filteredIncidents.length} records
@@ -440,8 +526,18 @@ export default function CivicDashboard() {
               type="search"
               placeholder="Search title, location, category..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setSimilarityResults(null);
+              }}
             />
+            <button
+              type="button"
+              onClick={() => void searchBySimilarity()}
+              disabled={searching}
+            >
+              {searching ? "Searching..." : "Find similar"}
+            </button>
 
             <select
               value={statusFilter}
@@ -476,6 +572,7 @@ export default function CivicDashboard() {
                     <th>STATUS</th>
                     <th>DEPARTMENT</th>
                     <th>LOCATION</th>
+                    <th>MANAGE</th>
                   </tr>
                 </thead>
 
@@ -515,6 +612,30 @@ export default function CivicDashboard() {
 
                       <td>{incident.department_name}</td>
                       <td>{incident.location}</td>
+                      <td>
+                        {["pending", "assigned"].includes(incident.status) && (
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => editIncident(incident)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteIncident(incident.incident_id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                        {similarityResults &&
+                          typeof incident.similarity === "number" && (
+                            <small>
+                              Similarity: {(incident.similarity * 100).toFixed(1)}%
+                            </small>
+                          )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

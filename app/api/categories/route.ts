@@ -12,6 +12,7 @@ export async function GET(request: Request) {
               d.department_name
        FROM categories c
        JOIN departments d ON d.department_id = c.department_id
+       WHERE d.is_active = true
        ORDER BY c.category_name`
     );
 

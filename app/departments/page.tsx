@@ -1,12 +1,13 @@
 
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 
 type Department = {
   department_id: number;
   department_name: string;
+  is_active: boolean;
   total_incidents: number;
   open_incidents: number;
   resolved_incidents: number;
@@ -22,6 +23,7 @@ type Officer = {
   department_id: number | string;
   department_name: string;
   is_manager: boolean;
+  is_active: boolean;
   email: string | null;
 };
 
@@ -152,6 +154,97 @@ export default function DepartmentsPage() {
     setOfficers(data.officers);
   }
 
+  async function removeOfficer(officer: Officer) {
+    if (!window.confirm(`Remove access for ${officer.full_name}? Existing incident history will be preserved.`)) {
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/officers", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: officer.user_id }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to remove officer access.");
+      }
+      await loadOfficers();
+      const departmentsResponse = await fetch("/api/departments", { cache: "no-store" });
+      const departmentsData = await departmentsResponse.json();
+      if (!departmentsResponse.ok || !departmentsData.success) {
+        throw new Error(departmentsData.message || "Unable to refresh departments.");
+      }
+      setDepartments(departmentsData.departments);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove officer access.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setOfficerActive(officer: Officer, isActive: boolean) {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/officers", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: officer.user_id,
+          is_active: isActive,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to update officer access.");
+      }
+      await loadOfficers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update officer access.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setDepartmentActive(department: Department, isActive: boolean) {
+    if (
+      !isActive &&
+      !window.confirm(
+        `Deactivate ${department.department_name}? Its reports and history will be preserved, but its staff will no longer be able to sign in.`
+      )
+    ) {
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/departments", {
+        method: isActive ? "PATCH" : "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ department_id: department.department_id, is_active: isActive }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to update department.");
+      }
+      const refresh = await fetch("/api/departments", { cache: "no-store" });
+      const refreshedData = await refresh.json();
+      if (!refresh.ok || !refreshedData.success) {
+        throw new Error(refreshedData.message || "Unable to refresh departments.");
+      }
+      setDepartments(refreshedData.departments);
+      await loadOfficers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update department.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveOfficerCredentials(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (editingOfficerId === null) return;
@@ -209,9 +302,12 @@ export default function DepartmentsPage() {
 
         setDepartments(data.departments);
         setOfficers(officersData.officers);
-        if (data.departments.length) {
-          setOfficerDepartmentId(String(data.departments[0].department_id));
-          setOfficerIsManager(!data.departments[0].manager_has_login);
+        const activeDepartments = data.departments.filter(
+          (department: Department) => department.is_active
+        );
+        if (activeDepartments.length) {
+          setOfficerDepartmentId(String(activeDepartments[0].department_id));
+          setOfficerIsManager(!activeDepartments[0].manager_has_login);
         }
       } catch (err) {
         setError(
@@ -444,7 +540,7 @@ export default function DepartmentsPage() {
           style={{ flex: "1 1 180px", padding: "11px 12px", border: "1px solid #dfe3ed", borderRadius: "8px" }}
         >
           <option value="">Choose a department</option>
-          {departments.map((department) => (
+          {departments.filter((department) => department.is_active).map((department) => (
             <option key={department.department_id} value={department.department_id}>
               {department.department_name}
             </option>
@@ -562,98 +658,122 @@ export default function DepartmentsPage() {
             </thead>
             <tbody>
               {officers.map((officer) => (
-                <tr key={officer.user_id}>
-                  <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
-                    {editingOfficerId === officer.user_id ? (
-                      <form onSubmit={saveOfficerCredentials} id={`officer-edit-${officer.user_id}`}>
-                        <input
-                          value={editingOfficerName}
-                          onChange={(event) => setEditingOfficerName(event.target.value)}
-                          minLength={2}
-                          maxLength={100}
-                          required
-                          aria-label="Officer full name"
-                          style={{ width: "100%", padding: "8px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
-                        />
-                      </form>
-                    ) : (
-                      <>
-                        <strong>{officer.full_name}</strong>
-                        {officer.is_manager && (
-                          <div style={{ color: "#5b50ef", fontSize: "12px" }}>Department manager</div>
-                        )}
-                      </>
-                    )}
-                  </td>
-                  <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
-                    {officer.department_name}
-                  </td>
-                  <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
-                    {editingOfficerId === officer.user_id ? (
-                      <>
-                        <input
-                          form={`officer-edit-${officer.user_id}`}
-                          value={editingOfficerEmail}
-                          onChange={(event) => setEditingOfficerEmail(event.target.value)}
-                          type="email"
-                          maxLength={254}
-                          required
-                          aria-label="Officer email"
-                          style={{ width: "100%", padding: "8px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
-                        />
-                        <input
-                          form={`officer-edit-${officer.user_id}`}
-                          value={editingOfficerPassword}
-                          onChange={(event) => setEditingOfficerPassword(event.target.value)}
-                          type="password"
-                          minLength={8}
-                          maxLength={72}
-                          autoComplete="new-password"
-                          placeholder="New password (optional)"
-                          aria-label="New officer password"
-                          style={{ width: "100%", marginTop: "8px", padding: "8px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
-                        />
-                      </>
-                    ) : (
-                      officer.email ?? "No login email"
-                    )}
-                  </td>
-                  <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
-                    {editingOfficerId === officer.user_id ? (
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        <button
-                          type="submit"
-                          form={`officer-edit-${officer.user_id}`}
-                          disabled={saving}
-                        >
-                          {saving ? "Saving..." : "Save"}
-                        </button>
+                <Fragment key={officer.user_id}>
+                  <tr>
+                    <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
+                      <strong>{officer.full_name}</strong>
+                      {officer.is_manager && (
+                        <div style={{ color: "#5b50ef", fontSize: "12px" }}>Department manager</div>
+                      )}
+                    </td>
+                    <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
+                      {officer.department_name}
+                    </td>
+                    <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
+                      {officer.email ?? "No login email"}
+                    </td>
+                    <td style={{ padding: "16px 20px", borderBottom: "1px solid #edf0f6" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                         <button
                           type="button"
-                          disabled={saving}
+                          disabled={saving || !officer.is_active}
                           onClick={() => {
-                            setEditingOfficerId(null);
+                            setEditingOfficerId(officer.user_id);
+                            setEditingOfficerName(officer.full_name);
+                            setEditingOfficerEmail(officer.email ?? "");
                             setEditingOfficerPassword("");
                           }}
                         >
-                          Cancel
+                          Edit credentials
                         </button>
+                        {officer.is_active ? (
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => void removeOfficer(officer)}
+                          >
+                            Remove access
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => void setOfficerActive(officer, true)}
+                          >
+                            Restore access
+                          </button>
+                        )}
+                        <span style={{ color: officer.is_active ? "#047857" : "#b91c1c", fontSize: "12px" }}>
+                          {officer.is_active ? "Active" : "Inactive"}
+                        </span>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingOfficerId(officer.user_id);
-                          setEditingOfficerName(officer.full_name);
-                          setEditingOfficerEmail(officer.email ?? "");
-                          setEditingOfficerPassword("");
-                        }}
-                      >
-                        Edit credentials
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                    </td>
+                  </tr>
+                  {editingOfficerId === officer.user_id && (
+                    <tr>
+                      <td colSpan={4} style={{ padding: "16px 20px", background: "#f8f9fc", borderBottom: "1px solid #edf0f6" }}>
+                        <form
+                          onSubmit={saveOfficerCredentials}
+                          style={{ display: "flex", flexWrap: "wrap", alignItems: "end", gap: "12px" }}
+                        >
+                          <label style={{ flex: "1 1 180px" }}>
+                            Full name
+                            <input
+                              value={editingOfficerName}
+                              onChange={(event) => setEditingOfficerName(event.target.value)}
+                              minLength={2}
+                              maxLength={100}
+                              required
+                              autoComplete="name"
+                              style={{ display: "block", width: "100%", marginTop: "5px", padding: "9px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
+                            />
+                          </label>
+                          <label style={{ flex: "1 1 200px" }}>
+                            Login email
+                            <input
+                              value={editingOfficerEmail}
+                              onChange={(event) => setEditingOfficerEmail(event.target.value)}
+                              type="email"
+                              maxLength={254}
+                              required
+                              autoComplete="email"
+                              style={{ display: "block", width: "100%", marginTop: "5px", padding: "9px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
+                            />
+                          </label>
+                          <label style={{ flex: "1 1 200px" }}>
+                            New password (optional)
+                            <input
+                              value={editingOfficerPassword}
+                              onChange={(event) => setEditingOfficerPassword(event.target.value)}
+                              type="password"
+                              minLength={8}
+                              maxLength={72}
+                              required={!officer.email}
+                              autoComplete="new-password"
+                              placeholder={officer.email ? "Leave blank to keep current" : "Required for first login setup"}
+                              style={{ display: "block", width: "100%", marginTop: "5px", padding: "9px", border: "1px solid #dfe3ed", borderRadius: "7px" }}
+                            />
+                          </label>
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <button type="submit" disabled={saving}>
+                              {saving ? "Saving..." : "Save changes"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={() => {
+                                setEditingOfficerId(null);
+                                setEditingOfficerPassword("");
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -810,6 +930,11 @@ export default function DepartmentsPage() {
                         />
                       </form>
                     ) : department.department_name}
+                    {!department.is_active && (
+                      <span style={{ marginLeft: "8px", color: "#b91c1c", fontSize: "12px" }}>
+                        Inactive
+                      </span>
+                    )}
                     <div
                       style={{
                         fontSize: "12px",
@@ -889,15 +1014,35 @@ export default function DepartmentsPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingDepartmentId(department.department_id);
-                          setEditingDepartmentName(department.department_name);
-                        }}
-                      >
-                        Rename
-                      </button>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => {
+                            setEditingDepartmentId(department.department_id);
+                            setEditingDepartmentName(department.department_name);
+                          }}
+                        >
+                          Rename
+                        </button>
+                        {department.is_active ? (
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => void setDepartmentActive(department, false)}
+                          >
+                            Deactivate
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => void setDepartmentActive(department, true)}
+                          >
+                            Restore
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>

@@ -28,15 +28,19 @@ export async function authenticateRequest(
     }
 
     const account = await pool.query(
-      `SELECT role
-       FROM users
-       WHERE auth_account_id = $1`,
+      `SELECT app_user.role, app_user.is_active, department.is_active AS department_active
+       FROM users app_user
+       LEFT JOIN departments department
+         ON department.department_id = app_user.department_id
+       WHERE app_user.auth_account_id = $1`,
       [session.userId]
     );
 
     if (
       account.rowCount === 0 ||
-      account.rows[0].role !== session.role
+      account.rows[0].role !== session.role ||
+      !account.rows[0].is_active ||
+      (session.role === "officer" && account.rows[0].department_active !== true)
     ) {
       return NextResponse.json(
         { success: false, message: "Your session is no longer valid. Please sign in again." },

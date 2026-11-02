@@ -41,6 +41,12 @@ export async function PATCH(
         { status: 400 }
       );
     }
+    if (auth.role === "officer" && newStatus === "rejected") {
+      return NextResponse.json(
+        { success: false, message: "Only an administrator can reject an incident." },
+        { status: 403 }
+      );
+    }
 
     await client.query("BEGIN");
 
@@ -64,7 +70,7 @@ export async function PATCH(
 
     const oldStatus = currentResult.rows[0].status;
     const actor = await client.query(
-      `SELECT user_id, department_id
+      `SELECT user_id, department_id, is_manager
        FROM users
        WHERE auth_account_id = $1`,
       [auth.userId]
@@ -78,15 +84,6 @@ export async function PATCH(
       );
     }
 
-    if (oldStatus === newStatus) {
-      await client.query("ROLLBACK");
-      return NextResponse.json({
-        success: true,
-        message: "The incident already has this status.",
-        status: oldStatus,
-      });
-    }
-
     if (
       auth.role === "officer" &&
       String(actor.rows[0].department_id) !==
@@ -97,6 +94,34 @@ export async function PATCH(
         { success: false, message: "You can only update incidents in your department." },
         { status: 403 }
       );
+    }
+
+    if (auth.role === "officer" && !actor.rows[0].is_manager) {
+      const assignment = await client.query(
+        `SELECT 1
+         FROM assignments
+         WHERE incident_id = $1 AND officer_id = $2`,
+        [incidentId, actor.rows[0].user_id]
+      );
+      if (assignment.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Only department managers or officers assigned to this incident can update its status.",
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    if (oldStatus === newStatus) {
+      await client.query("ROLLBACK");
+      return NextResponse.json({
+        success: true,
+        message: "The incident already has this status.",
+        status: oldStatus,
+      });
     }
 
     await client.query(

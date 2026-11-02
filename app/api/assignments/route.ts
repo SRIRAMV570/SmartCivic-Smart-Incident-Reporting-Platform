@@ -54,16 +54,31 @@ export async function POST(request: Request) {
         { status: 404 }
       );
     }
+    const oldStatus = incident.rows[0].status as string;
+    if (!["pending", "assigned"].includes(oldStatus)) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Incidents can only be assigned or reassigned before work starts.",
+        },
+        { status: 409 }
+      );
+    }
 
     const officer = await client.query(
       `SELECT user_id, full_name, department_id
        FROM users
        WHERE user_id = $1
          AND role = 'officer'
+         AND is_active = true
          AND department_id = (
-           SELECT department_id
-           FROM categories
-           WHERE category_id = $2
+           SELECT category.department_id
+           FROM categories category
+           JOIN departments department
+             ON department.department_id = category.department_id
+           WHERE category.category_id = $2
+             AND department.is_active = true
          )`,
       [officerId, incident.rows[0].category_id]
     );
@@ -79,34 +94,34 @@ export async function POST(request: Request) {
       );
     }
 
-   const assignment = await client.query(
-  `INSERT INTO assignments (incident_id, officer_id, assigned_by)
-   VALUES ($1, $2, $3)
-   ON CONFLICT (incident_id, officer_id)
-   DO UPDATE SET assigned_by = EXCLUDED.assigned_by
-   RETURNING *`,
-  [incidentId, officerId, assignedBy]
-);
-    const oldStatus = incident.rows[0].status;
+    await client.query(
+      "DELETE FROM assignments WHERE incident_id = $1",
+      [incidentId]
+    );
+    const assignment = await client.query(
+      `INSERT INTO assignments (incident_id, officer_id, assigned_by)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [incidentId, officerId, assignedBy]
+    );
 
-    if (oldStatus !== "assigned") {
-      await client.query(
-        "UPDATE incidents SET status = 'assigned' WHERE incident_id = $1",
-        [incidentId]
-      );
-
-      await client.query(
-        `INSERT INTO status_history
-          (incident_id, old_status, new_status, changed_by, remarks)
-         VALUES ($1, $2, 'assigned', $3, $4)`,
-        [
-          incidentId,
-          oldStatus,
-          assignedBy,
-          `Assigned to ${officer.rows[0].full_name}`,
-        ]
-      );
-    }
+    await client.query(
+      `UPDATE incidents
+       SET status = 'assigned', updated_at = CURRENT_TIMESTAMP
+       WHERE incident_id = $1`,
+      [incidentId]
+    );
+    await client.query(
+      `INSERT INTO status_history
+        (incident_id, old_status, new_status, changed_by, remarks)
+       VALUES ($1, $2, 'assigned', $3, $4)`,
+      [
+        incidentId,
+        oldStatus,
+        assignedBy,
+        `${oldStatus === "assigned" ? "Reassigned" : "Assigned"} to ${officer.rows[0].full_name}`,
+      ]
+    );
 
     await client.query("COMMIT");
 

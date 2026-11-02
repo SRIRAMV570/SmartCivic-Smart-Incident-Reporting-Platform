@@ -68,9 +68,12 @@ export async function POST(request: Request) {
   try {
     const result = await pool.query(
       `SELECT account.account_id, account.full_name, account.email,
-              account.password_hash, app_user.role
+              account.password_hash, app_user.role, app_user.is_active,
+              department.is_active AS department_active
        FROM auth_accounts account
        JOIN users app_user ON app_user.auth_account_id = account.account_id
+       LEFT JOIN departments department
+         ON department.department_id = app_user.department_id
        WHERE account.email = $1`,
       [email]
     );
@@ -81,10 +84,17 @@ export async function POST(request: Request) {
           email: string;
           password_hash: string;
           role: "resident" | "officer" | "admin";
+          is_active: boolean;
+          department_active: boolean | null;
         }
       | undefined;
 
-    if (!account || !(await bcrypt.compare(password, account.password_hash))) {
+    if (
+      !account ||
+      !account.is_active ||
+      (account.role === "officer" && account.department_active !== true) ||
+      !(await bcrypt.compare(password, account.password_hash))
+    ) {
       return NextResponse.json(
         { success: false, message: "Invalid email or password." },
         { status: 401 }

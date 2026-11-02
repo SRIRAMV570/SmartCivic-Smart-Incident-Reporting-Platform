@@ -8,6 +8,7 @@ type Officer = {
   full_name: string;
   department_id: number | string;
   department_name: string;
+  is_active: boolean;
 };
 
 type Incident = {
@@ -140,14 +141,16 @@ async function updateIncidentStatus(incidentId: number, status: string) {
   useEffect(() => {
     async function loadIncidents() {
       try {
-        const response = await fetch("/api/incidents", { cache: "no-store" });
-        const data = await response.json();
+        const incidentsResponse = await fetch("/api/incidents", {
+          cache: "no-store",
+        });
+        const incidentsData = await incidentsResponse.json();
 
-        if (!response.ok || !data.success) {
-          throw new Error(data.message || "Failed to load incidents.");
+        if (!incidentsResponse.ok || !incidentsData.success) {
+          throw new Error(incidentsData.message || "Failed to load incidents.");
         }
 
-        setIncidents(data.incidents);
+        setIncidents(incidentsData.incidents);
         setError("");
       } catch (err) {
         setError(
@@ -169,7 +172,8 @@ async function updateIncidentStatus(incidentId: number, status: string) {
   const availableOfficers = selectedIncidentRecord
     ? officers.filter(
         (officer) =>
-          String(officer.department_id) ===
+        officer.is_active &&
+        String(officer.department_id) ===
           String(selectedIncidentRecord.department_id)
       )
     : [];
@@ -191,7 +195,8 @@ async function updateIncidentStatus(incidentId: number, status: string) {
 <div className="mb-6 rounded-xl border bg-white p-6 shadow-sm">
   <h2 className="text-xl font-semibold">Assign Incident to Officer</h2>
   <p className="mt-1 text-sm text-gray-600">
-    Select an incident and assign it to a department officer.
+    Resident edits return to pending review. Assign or reassign reports before
+    work starts; use Update status to reject reports that should not proceed.
   </p>
 
   <div className="mt-4 grid gap-4 md:grid-cols-3">
