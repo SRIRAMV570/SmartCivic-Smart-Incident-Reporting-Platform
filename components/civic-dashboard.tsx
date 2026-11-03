@@ -20,6 +20,12 @@ type Incident = {
   similarity?: number;
 };
 
+type ResolvedNotice = {
+  incident_id: number;
+  incident_title: string;
+  changed_at: string;
+};
+
 type Category = {
   category_id: number;
   category_name: string;
@@ -41,6 +47,7 @@ const initialForm = {
 export default function CivicDashboard() {
   const router = useRouter();
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [resolvedNotices, setResolvedNotices] = useState<ResolvedNotice[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [account, setAccount] = useState<CivicAccount | null>(null);
   const [search, setSearch] = useState("");
@@ -68,17 +75,49 @@ export default function CivicDashboard() {
 
   async function loadIncidents() {
     try {
-      const response = await fetch("/api/incidents", { cache: "no-store" });
-      const data = await response.json();
+      const [response, historyResponse] = await Promise.all([
+        fetch("/api/incidents", { cache: "no-store" }),
+        fetch("/api/activity-history", { cache: "no-store" }),
+      ]);
+      const [data, historyData] = await Promise.all([
+        response.json(),
+        historyResponse.json(),
+      ]);
 
       if (!response.ok || !data.success) {
-        throw new Error("Unable to load incidents.");
+        throw new Error(data.message || "Unable to load incidents.");
+      }
+      if (!historyResponse.ok || !historyData.success) {
+        throw new Error(historyData.message || "Unable to load incident updates.");
       }
 
       setIncidents(data.incidents);
+      const latestStatusByIncident = new Map<number, ResolvedNotice | null>();
+      for (const record of historyData.history) {
+        if (latestStatusByIncident.has(record.incident_id)) continue;
+        latestStatusByIncident.set(
+          record.incident_id,
+          record.new_status === "resolved"
+            ? {
+                incident_id: record.incident_id,
+                incident_title: record.incident_title,
+                changed_at: record.changed_at,
+              }
+            : null
+        );
+      }
+      setResolvedNotices(
+        Array.from(latestStatusByIncident.values()).filter(
+          (notice): notice is ResolvedNotice => notice !== null
+        )
+      );
       setError("");
-    } catch {
-      setError("Could not load incidents. Please refresh the page.");
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Could not load incidents. Please refresh the page."
+      );
     } finally {
       setLoading(false);
     }
@@ -255,9 +294,7 @@ export default function CivicDashboard() {
       !["resolved", "rejected"].includes(incident.status)
   ).length;
 
-  const resolvedCount = incidents.filter(
-    (incident) => incident.status === "resolved"
-  ).length;
+  const resolvedCount = resolvedNotices.length;
 
   const highPriorityCount = incidents.filter(
     (incident) =>
@@ -338,6 +375,44 @@ export default function CivicDashboard() {
           </div>
           <div className="welcome-symbol">⌖</div>
         </section>
+
+        {resolvedNotices.length > 0 && (
+          <section
+            className="incidents-panel"
+            role="status"
+            aria-live="polite"
+            aria-labelledby="resolved-notices-heading"
+          >
+            <div className="panel-heading">
+              <div>
+                <h2 id="resolved-notices-heading">
+                  {resolvedNotices.length === 1
+                    ? "Your incident has been resolved"
+                    : "Your incidents have been resolved"}
+                </h2>
+                <p>
+                  Resolved incidents are removed from your active reports and
+                  remain available in your progress history.
+                </p>
+              </div>
+              <Link className="back-link" href="/civic/activity-history">
+                View my progress →
+              </Link>
+            </div>
+            {resolvedNotices.map((notice) => (
+              <p className="message" key={notice.incident_id}>
+                <strong>{notice.incident_title}</strong> (INC-
+                {String(notice.incident_id).padStart(4, "0")}) was marked
+                resolved on{" "}
+                {new Date(notice.changed_at).toLocaleString("en-IN", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+                .
+              </p>
+            ))}
+          </section>
+        )}
 
         <section className="stats-grid">
           <article className="stat-card">
@@ -548,7 +623,6 @@ export default function CivicDashboard() {
               <option value="pending">Pending</option>
               <option value="assigned">Assigned</option>
               <option value="in_progress">In progress</option>
-              <option value="resolved">Resolved</option>
               <option value="rejected">Rejected</option>
             </select>
           </div>

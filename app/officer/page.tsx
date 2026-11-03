@@ -102,11 +102,13 @@ export default function OfficerPage() {
       }
 
       setIncidents((current) =>
-        current.map((incident) =>
-          incident.incident_id === incidentId
-            ? { ...incident, status: data.new_status ?? status }
-            : incident
-        )
+        status === "resolved"
+          ? current.filter((incident) => incident.incident_id !== incidentId)
+          : current.map((incident) =>
+              incident.incident_id === incidentId
+                ? { ...incident, status: data.new_status ?? status }
+                : incident
+            )
       );
       setNotice(`Incident #${incidentId} status updated. The administrator can see this change in activity history.`);
     } catch (updateError) {
