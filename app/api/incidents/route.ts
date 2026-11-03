@@ -31,8 +31,17 @@ export async function GET(request: Request) {
       JOIN categories c ON i.category_id = c.category_id
       JOIN departments d ON c.department_id = d.department_id
       JOIN users u ON i.reported_by = u.user_id
-      WHERE ${searchFilter}
-      ORDER BY i.created_at DESC
+      WHERE i.status <> 'resolved'
+        AND ${searchFilter}
+      ORDER BY
+        CASE i.priority
+          WHEN 'critical' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'medium' THEN 3
+          WHEN 'low' THEN 4
+          ELSE 5
+        END,
+        i.created_at DESC
     `, [searchTerm])
       : auth.role === "officer"
         ? await pool.query(
@@ -55,6 +64,7 @@ export async function GET(request: Request) {
            JOIN users reporter ON i.reported_by = reporter.user_id
            JOIN users officer ON officer.auth_account_id = $1
            WHERE d.department_id = officer.department_id
+             AND i.status <> 'resolved'
              AND ($2::text = '' OR i.search_vector @@ websearch_to_tsquery('english', $2))
              AND (
                officer.is_manager = true
@@ -65,7 +75,15 @@ export async function GET(request: Request) {
                    AND assignment.officer_id = officer.user_id
                )
              )
-           ORDER BY i.created_at DESC`,
+           ORDER BY
+             CASE i.priority
+               WHEN 'critical' THEN 1
+               WHEN 'high' THEN 2
+               WHEN 'medium' THEN 3
+               WHEN 'low' THEN 4
+               ELSE 5
+             END,
+             i.created_at DESC`,
           [auth.userId, searchTerm]
         )
       : await pool.query(
@@ -87,6 +105,7 @@ export async function GET(request: Request) {
            JOIN departments d ON c.department_id = d.department_id
            JOIN users u ON i.reported_by = u.user_id
            WHERE u.auth_account_id = $2
+             AND i.status <> 'resolved'
              AND ${searchFilter}
            ORDER BY i.created_at DESC`,
           [searchTerm, auth.userId]

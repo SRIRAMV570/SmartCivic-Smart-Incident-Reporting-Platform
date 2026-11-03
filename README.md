@@ -87,5 +87,3 @@ SQL incident create/edit operations commit a vector-sync outbox row before Qdran
 npm run lint
 npm run build
 ```
-
-Before submission, complete the project documentation's team contribution table, add actual application screenshots, and record database-backed test results.

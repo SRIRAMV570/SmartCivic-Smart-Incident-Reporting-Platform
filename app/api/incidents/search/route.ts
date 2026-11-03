@@ -96,7 +96,8 @@ export async function GET(request: Request) {
                  JOIN users reporter ON reporter.user_id = incident.reported_by
                  LEFT JOIN incident_vector_sync vector_sync
                    ON vector_sync.incident_id = incident.incident_id
-                 WHERE reporter.auth_account_id = $1`,
+                 WHERE reporter.auth_account_id = $1
+                   AND incident.status <> 'resolved'`,
                 [auth.userId]
               )
             ).rows;

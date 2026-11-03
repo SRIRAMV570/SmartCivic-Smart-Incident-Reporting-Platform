@@ -121,12 +121,18 @@ async function updateIncidentStatus(incidentId: number, status: string) {
     }
 
     setIncidents((current) =>
-      current.map((incident) =>
-        incident.incident_id === incidentId
-          ? { ...incident, status }
-          : incident
-      )
+      status === "resolved"
+        ? current.filter((incident) => incident.incident_id !== incidentId)
+        : current.map((incident) =>
+            incident.incident_id === incidentId
+              ? { ...incident, status }
+              : incident
+          )
     );
+    if (status === "resolved" && selectedIncident === String(incidentId)) {
+      setSelectedIncident("");
+      setOfficerId("");
+    }
     setAssignMessage(`Incident #${incidentId} marked ${status.replace("_", " ")}.`);
   } catch (err) {
     setAssignMessage(
