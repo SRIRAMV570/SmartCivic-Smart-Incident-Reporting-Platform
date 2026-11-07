@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -61,6 +61,7 @@ export default function CivicDashboard() {
   const [message, setMessage] = useState("");
   const [similarityResults, setSimilarityResults] = useState<Incident[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const sessionExpired = useRef(false);
 
   async function handleLogout() {
     try {
@@ -73,12 +74,21 @@ export default function CivicDashboard() {
     }
   }
 
-  async function loadIncidents() {
+  const loadIncidents = useCallback(async () => {
+    if (sessionExpired.current) return;
+
     try {
       const [response, historyResponse] = await Promise.all([
         fetch("/api/incidents", { cache: "no-store" }),
         fetch("/api/activity-history", { cache: "no-store" }),
       ]);
+
+      if (response.status === 401 || historyResponse.status === 401) {
+        sessionExpired.current = true;
+        router.replace("/civic/login");
+        return;
+      }
+
       const [data, historyData] = await Promise.all([
         response.json(),
         historyResponse.json(),
@@ -121,7 +131,7 @@ export default function CivicDashboard() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [router]);
 
   useEffect(() => {
     async function loadDashboardData() {
@@ -130,6 +140,12 @@ export default function CivicDashboard() {
           fetch("/api/auth/me"),
           fetch("/api/categories"),
         ]);
+        if (accountResponse.status === 401 || categoriesResponse.status === 401) {
+          sessionExpired.current = true;
+          router.replace("/civic/login");
+          return;
+        }
+
         const [accountData, categoryData] = await Promise.all([
           accountResponse.json(),
           categoriesResponse.json(),
@@ -153,13 +169,15 @@ export default function CivicDashboard() {
       void loadDashboardData();
       void loadIncidents();
     }, 0);
-    const refreshTimer = window.setInterval(() => void loadIncidents(), 10000);
+    const refreshTimer = window.setInterval(() => {
+      if (!sessionExpired.current) void loadIncidents();
+    }, 10000);
 
     return () => {
       window.clearTimeout(loadTimer);
       window.clearInterval(refreshTimer);
     };
-  }, []);
+  }, [loadIncidents, router]);
 
   async function handleSubmit(
     event: React.FormEvent<HTMLFormElement>

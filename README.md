@@ -41,6 +41,7 @@ psql "$env:DATABASE_URL" -f db\migrations\002_create_incident_relations.sql
 psql "$env:DATABASE_URL" -f db\migrations\003_department_officer_managers.sql
 psql "$env:DATABASE_URL" -f db\migrations\004_project_features.sql
 psql "$env:DATABASE_URL" -f db\migrations\005_vector_search_outbox.sql
+psql "$env:DATABASE_URL" -f db\migrations\006_feedback.sql
 ```
 
 The vector service is Qdrant. Start the included local instance in another terminal:
