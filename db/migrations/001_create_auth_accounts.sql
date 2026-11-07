@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS auth_accounts (
+  account_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  full_name VARCHAR(100) NOT NULL,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT auth_accounts_email_lowercase CHECK (email = LOWER(email))
+);
