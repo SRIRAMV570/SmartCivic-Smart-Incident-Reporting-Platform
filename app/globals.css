@@ -1064,3 +1064,35 @@ footer {
     display: none;
   }
 }
+
+/* ─────────────────────────────────────────────
+   Feedback: "Rate it" button & "Rated" badge
+   (used in activity-history table for residents)
+───────────────────────────────────────────── */
+.feedback-rate-btn {
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: #fff5dd;
+  color: #a66b05;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease;
+}
+
+.feedback-rate-btn:hover {
+  background: #ffe9a0;
+}
+
+.feedback-submitted-badge {
+  display: inline-block;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: #e6f8ef;
+  color: #087b4e;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}

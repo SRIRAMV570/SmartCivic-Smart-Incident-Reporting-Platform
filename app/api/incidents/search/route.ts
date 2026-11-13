@@ -2,8 +2,11 @@ import { NextResponse } from "next/server";
 import pool from "@/lib/db";
 import { authenticateRequest } from "@/lib/auth/authenticate";
 import { embedIncidentText, INCIDENT_EMBEDDING_MODEL } from "@/lib/incident-embeddings";
-import { syncIncidentVector } from "@/lib/incident-vector-sync";
-import { searchIncidentVectors } from "@/lib/qdrant";
+import { syncMissingIncidentVectors } from "@/lib/incident-vector-sync";
+import {
+  INCIDENT_SIMILARITY_THRESHOLD,
+  searchIncidentVectors,
+} from "@/lib/qdrant";
 
 type VisibleIncident = {
   incident_id: string;
@@ -17,7 +20,6 @@ type VisibleIncident = {
   category_name: string;
   department_name: string;
   reported_by: string;
-  indexed_at: string | null;
 };
 
 export async function GET(request: Request) {
@@ -46,14 +48,11 @@ export async function GET(request: Request) {
               `SELECT incident.incident_id, incident.category_id, incident.title,
                       incident.description, incident.location, incident.priority,
                       incident.status, incident.created_at, category.category_name,
-                      department.department_name, reporter.full_name AS reported_by,
-                      vector_sync.indexed_at
+                      department.department_name, reporter.full_name AS reported_by
                FROM incidents incident
                JOIN categories category ON category.category_id = incident.category_id
                JOIN departments department ON department.department_id = category.department_id
-               JOIN users reporter ON reporter.user_id = incident.reported_by
-               LEFT JOIN incident_vector_sync vector_sync
-                 ON vector_sync.incident_id = incident.incident_id`
+               JOIN users reporter ON reporter.user_id = incident.reported_by`
             )
           ).rows
         : auth.role === "officer"
@@ -62,15 +61,12 @@ export async function GET(request: Request) {
                 `SELECT DISTINCT incident.incident_id, incident.category_id, incident.title,
                         incident.description, incident.location, incident.priority,
                         incident.status, incident.created_at, category.category_name,
-                        department.department_name, reporter.full_name AS reported_by,
-                        vector_sync.indexed_at
+                        department.department_name, reporter.full_name AS reported_by
                  FROM incidents incident
                  JOIN categories category ON category.category_id = incident.category_id
                  JOIN departments department ON department.department_id = category.department_id
                  JOIN users reporter ON reporter.user_id = incident.reported_by
                  JOIN users viewer ON viewer.auth_account_id = $1 AND viewer.is_active = true
-                 LEFT JOIN incident_vector_sync vector_sync
-                   ON vector_sync.incident_id = incident.incident_id
                  WHERE department.department_id = viewer.department_id
                    AND (
                      viewer.is_manager = true
@@ -88,25 +84,18 @@ export async function GET(request: Request) {
                 `SELECT incident.incident_id, incident.category_id, incident.title,
                         incident.description, incident.location, incident.priority,
                         incident.status, incident.created_at, category.category_name,
-                        department.department_name, reporter.full_name AS reported_by,
-                        vector_sync.indexed_at
+                        department.department_name, reporter.full_name AS reported_by
                  FROM incidents incident
                  JOIN categories category ON category.category_id = incident.category_id
                  JOIN departments department ON department.department_id = category.department_id
                  JOIN users reporter ON reporter.user_id = incident.reported_by
-                 LEFT JOIN incident_vector_sync vector_sync
-                   ON vector_sync.incident_id = incident.incident_id
                  WHERE reporter.auth_account_id = $1
                    AND incident.status <> 'resolved'`,
                 [auth.userId]
               )
             ).rows;
 
-    for (const incident of visibleIncidents) {
-      if (!incident.indexed_at) {
-        await syncIncidentVector(incident);
-      }
-    }
+    await syncMissingIncidentVectors(visibleIncidents);
 
     const matches = await searchIncidentVectors(
       query,
@@ -115,10 +104,14 @@ export async function GET(request: Request) {
     const incidentsById = new Map(
       visibleIncidents.map((incident) => [String(incident.incident_id), incident])
     );
-    const results = matches.flatMap((match) => {
+    const results = matches.filter(
+      (match) =>
+        Number.isFinite(match.score) &&
+        match.score >= INCIDENT_SIMILARITY_THRESHOLD
+    ).flatMap((match) => {
       const incident = incidentsById.get(String(match.id));
       return incident
-        ? [{ ...incident, indexed_at: undefined, similarity: match.score }]
+        ? [{ ...incident, similarity: match.score }]
         : [];
     });
 

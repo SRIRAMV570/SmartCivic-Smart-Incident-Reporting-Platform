@@ -1,7 +1,7 @@
-import DepartmentsPage from "../../departments/page";
+import DepartmentsClientPage from "@/components/departments-page";
 
 export const instant = false;
 
 export default function AdminDepartmentsPage() {
-  return <DepartmentsPage />;
+  return <DepartmentsClientPage />;
 }

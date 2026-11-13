@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import ComplaintModal from "@/components/complaint-modal";
 
 type Incident = {
   incident_id: number;
@@ -18,6 +19,13 @@ type Incident = {
   department_name: string;
   reported_by: string;
   similarity?: number;
+};
+
+type ComplaintSummary = {
+  complaint_id: number | string;
+  incident_id: number | string;
+  next_complaint_at: string;
+  can_complain_again: boolean;
 };
 
 type ResolvedNotice = {
@@ -39,7 +47,7 @@ type CivicAccount = {
 const initialForm = {
   title: "",
   description: "",
-  category_id: "1",
+  category_id: "",
   location: "",
   priority: "medium",
 };
@@ -59,6 +67,8 @@ export default function CivicDashboard() {
   const [form, setForm] = useState(initialForm);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [complaintIncident, setComplaintIncident] = useState<{ id: number; title: string } | null>(null);
+  const [complaintsByIncident, setComplaintsByIncident] = useState<Map<number, ComplaintSummary>>(new Map());
   const [similarityResults, setSimilarityResults] = useState<Incident[] | null>(null);
   const [searching, setSearching] = useState(false);
   const sessionExpired = useRef(false);
@@ -78,20 +88,29 @@ export default function CivicDashboard() {
     if (sessionExpired.current) return;
 
     try {
-      const [response, historyResponse] = await Promise.all([
+      const [response, historyResponse, categoriesResponse, complaintsResponse] = await Promise.all([
         fetch("/api/incidents", { cache: "no-store" }),
         fetch("/api/activity-history", { cache: "no-store" }),
+        fetch("/api/categories", { cache: "no-store" }),
+        fetch("/api/complaints", { cache: "no-store" }),
       ]);
 
-      if (response.status === 401 || historyResponse.status === 401) {
+      if (
+        response.status === 401 ||
+        historyResponse.status === 401 ||
+        categoriesResponse.status === 401 ||
+        complaintsResponse.status === 401
+      ) {
         sessionExpired.current = true;
         router.replace("/civic/login");
         return;
       }
 
-      const [data, historyData] = await Promise.all([
+      const [data, historyData, categoriesData, complaintsData] = await Promise.all([
         response.json(),
         historyResponse.json(),
+        categoriesResponse.json(),
+        complaintsResponse.json(),
       ]);
 
       if (!response.ok || !data.success) {
@@ -100,8 +119,33 @@ export default function CivicDashboard() {
       if (!historyResponse.ok || !historyData.success) {
         throw new Error(historyData.message || "Unable to load incident updates.");
       }
+      if (!categoriesResponse.ok || !categoriesData.success) {
+        throw new Error(categoriesData.message || "Unable to load incident categories.");
+      }
+      if (!complaintsResponse.ok || !complaintsData.success) {
+        throw new Error(complaintsData.message || "Unable to load your complaints.");
+      }
+
+      const complaintMap = new Map<number, ComplaintSummary>();
+      for (const complaint of complaintsData.complaints as ComplaintSummary[]) {
+        const incidentId = Number(complaint.incident_id);
+        if (!complaintMap.has(incidentId)) {
+          complaintMap.set(incidentId, complaint);
+        }
+      }
+      setComplaintsByIncident(complaintMap);
 
       setIncidents(data.incidents);
+      setCategories(categoriesData.categories);
+      setForm((currentForm) => ({
+        ...currentForm,
+        category_id: categoriesData.categories.some(
+          (category: Category) =>
+            String(category.category_id) === currentForm.category_id
+        )
+          ? currentForm.category_id
+          : String(categoriesData.categories[0]?.category_id ?? ""),
+      }));
       const latestStatusByIncident = new Map<number, ResolvedNotice | null>();
       for (const record of historyData.history) {
         if (latestStatusByIncident.has(record.incident_id)) continue;
@@ -136,30 +180,22 @@ export default function CivicDashboard() {
   useEffect(() => {
     async function loadDashboardData() {
       try {
-        const [accountResponse, categoriesResponse] = await Promise.all([
-          fetch("/api/auth/me"),
-          fetch("/api/categories"),
-        ]);
-        if (accountResponse.status === 401 || categoriesResponse.status === 401) {
+        const accountResponse = await fetch("/api/auth/me", {
+          cache: "no-store",
+        });
+        if (accountResponse.status === 401) {
           sessionExpired.current = true;
           router.replace("/civic/login");
           return;
         }
 
-        const [accountData, categoryData] = await Promise.all([
-          accountResponse.json(),
-          categoriesResponse.json(),
-        ]);
+        const accountData = await accountResponse.json();
 
         if (!accountResponse.ok || !accountData.success) {
           throw new Error(accountData.message || "Unable to load your account.");
         }
-        if (!categoriesResponse.ok || !categoryData.success) {
-          throw new Error(categoryData.message || "Unable to load categories.");
-        }
 
         setAccount(accountData.account);
-        setCategories(categoryData.categories);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load dashboard.");
       }
@@ -336,6 +372,31 @@ export default function CivicDashboard() {
 
   return (
     <main className="dashboard">
+      {complaintIncident && (
+        <ComplaintModal
+          incidentId={complaintIncident.id}
+          incidentTitle={complaintIncident.title}
+          onClose={() => setComplaintIncident(null)}
+          onSubmitted={() => {
+            const id = complaintIncident.id;
+            setComplaintsByIncident((current) => {
+              const next = new Map(current);
+              next.set(id, {
+                complaint_id: "pending",
+                incident_id: id,
+                can_complain_again: false,
+                next_complaint_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              });
+              return next;
+            });
+            setComplaintIncident(null);
+            setMessage(
+              "Your complaint has been submitted. Administration and assigned officers have been alerted."
+            );
+            void loadIncidents();
+          }}
+        />
+      )}
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-icon">S</span>
@@ -351,6 +412,9 @@ export default function CivicDashboard() {
         <Link href="/civic/activity-history" className="nav-item">
   <span>◷</span> My progress
 </Link>
+        <Link href="/civic/complaints-feedback" className="nav-item">
+          <span>⚠</span> Complaints & feedback
+        </Link>
         <div className="sidebar-bottom">
           <div className="sidebar-account">
             <div className="avatar">SC</div>
@@ -540,6 +604,7 @@ export default function CivicDashboard() {
               <label htmlFor="category">Category</label>
               <select
                 id="category"
+                required
                 value={form.category_id}
                 onChange={(e) =>
                   setForm({
@@ -548,6 +613,11 @@ export default function CivicDashboard() {
                   })
                 }
               >
+                <option value="" disabled>
+                  {categories.length
+                    ? "Choose an incident category"
+                    : "No categories available"}
+                </option>
                 {categories.map((category) => (
                   <option key={category.category_id} value={category.category_id}>
                     {category.category_name} — {category.department_name}
@@ -590,7 +660,7 @@ export default function CivicDashboard() {
               <button
                 className="report-button"
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || categories.length === 0}
               >
                 {submitting
                   ? "Saving..."
@@ -706,7 +776,7 @@ export default function CivicDashboard() {
                       <td>{incident.location}</td>
                       <td>
                         {["pending", "assigned"].includes(incident.status) && (
-                          <div style={{ display: "flex", gap: "8px" }}>
+                          <div style={{ display: "flex", gap: "8px", marginBottom: "4px" }}>
                             <button
                               type="button"
                               onClick={() => editIncident(incident)}
@@ -721,9 +791,50 @@ export default function CivicDashboard() {
                             </button>
                           </div>
                         )}
+                        {!["resolved", "rejected"].includes(incident.status) && (() => {
+                          const complaint = complaintsByIncident.get(incident.incident_id);
+                          const canComplainAgain = !complaint || complaint.can_complain_again;
+                          return (
+                          <button
+                            type="button"
+                            disabled={!canComplainAgain}
+                            onClick={() =>
+                              setComplaintIncident({
+                                id: incident.incident_id,
+                                title: incident.title,
+                              })
+                            }
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              border: "1px solid #fca5a5",
+                              background: canComplainAgain ? "#fff" : "#fef2f2",
+                              color: canComplainAgain ? "#b91c1c" : "#7f1d1d",
+                              fontSize: "11px",
+                              fontWeight: 600,
+                              cursor: canComplainAgain ? "pointer" : "not-allowed",
+                              opacity: canComplainAgain ? 1 : 0.9,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                            }}
+                          >
+                            {canComplainAgain
+                              ? complaint
+                                ? "⚠️ Complain again"
+                                : "⚠️ Report delay / complain"
+                              : `✓ Complained · again after ${new Date(complaint.next_complaint_at).toLocaleString("en-IN", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}`}
+                          </button>
+                          );
+                        })()}
                         {similarityResults &&
                           typeof incident.similarity === "number" && (
-                            <small>
+                            <small style={{ display: "block", marginTop: "4px" }}>
                               Similarity: {(incident.similarity * 100).toFixed(1)}%
                             </small>
                           )}

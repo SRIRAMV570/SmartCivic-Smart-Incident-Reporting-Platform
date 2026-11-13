@@ -1,44 +1,89 @@
-
 import { NextResponse } from "next/server";
-import pool, { ensureFeedbackTable } from "@/lib/db";
+import pool, { ensureFeedbackTable, ensureNotificationsTable } from "@/lib/db";
 import { authenticateRequest } from "@/lib/auth/authenticate";
 
-// GET /api/feedback?incident_id=<id>
-// Returns feedback for a specific incident.
-// Residents see only their own feedback; admins see all feedback for that incident.
+// GET /api/feedback?incident_id=<optional_id>
+// Returns feedback for a specific incident or all feedback for admin.
 export async function GET(request: Request) {
   await ensureFeedbackTable();
+  await ensureNotificationsTable();
 
   const auth = await authenticateRequest(request);
   if (auth instanceof NextResponse) return auth;
 
   const url = new URL(request.url);
-  const incidentId = Number(url.searchParams.get("incident_id"));
-
-  if (!Number.isInteger(incidentId) || incidentId < 1) {
-    return NextResponse.json(
-      { success: false, message: "A valid incident_id query parameter is required." },
-      { status: 400 }
-    );
-  }
+  const incidentIdParam = url.searchParams.get("incident_id");
+  const incidentId = incidentIdParam ? Number(incidentIdParam) : null;
 
   try {
     if (auth.role === "admin") {
-      // Admins see all feedback for this incident
+      if (incidentId && Number.isInteger(incidentId) && incidentId > 0) {
+        // Admins see all feedback for this specific incident
+        const result = await pool.query(
+          `SELECT
+             f.feedback_id,
+             f.incident_id,
+             i.title AS incident_title,
+             c.category_name,
+             d.department_name,
+             f.submitted_by,
+             u.full_name AS submitted_by_name,
+             COALESCE(
+               (
+                 SELECT string_agg(officer.full_name, ', ' ORDER BY officer.full_name)
+                 FROM assignments assignment
+                 JOIN users officer ON officer.user_id = assignment.officer_id
+                 WHERE assignment.incident_id = i.incident_id
+               ),
+               ''
+             ) AS assigned_officer_name,
+             f.rating,
+             f.comment,
+             f.submitted_at
+           FROM feedback f
+           JOIN incidents i ON f.incident_id = i.incident_id
+           JOIN categories c ON i.category_id = c.category_id
+           JOIN departments d ON c.department_id = d.department_id
+           JOIN users u ON f.submitted_by = u.user_id
+           WHERE f.incident_id = $1
+           ORDER BY f.submitted_at DESC`,
+          [incidentId]
+        );
+        return NextResponse.json({
+          success: true,
+          count: result.rows.length,
+          feedback: result.rows,
+        });
+      }
+
+      // Admins see ALL feedback across all incidents for the civic feedback page
       const result = await pool.query(
         `SELECT
            f.feedback_id,
            f.incident_id,
+           i.title AS incident_title,
+           c.category_name,
+           d.department_name,
            f.submitted_by,
            u.full_name AS submitted_by_name,
+           COALESCE(
+             (
+               SELECT string_agg(officer.full_name, ', ' ORDER BY officer.full_name)
+               FROM assignments assignment
+               JOIN users officer ON officer.user_id = assignment.officer_id
+               WHERE assignment.incident_id = i.incident_id
+             ),
+             ''
+           ) AS assigned_officer_name,
            f.rating,
            f.comment,
            f.submitted_at
          FROM feedback f
+         JOIN incidents i ON f.incident_id = i.incident_id
+         JOIN categories c ON i.category_id = c.category_id
+         JOIN departments d ON c.department_id = d.department_id
          JOIN users u ON f.submitted_by = u.user_id
-         WHERE f.incident_id = $1
-         ORDER BY f.submitted_at DESC`,
-        [incidentId]
+         ORDER BY f.submitted_at DESC`
       );
       return NextResponse.json({
         success: true,
@@ -47,19 +92,73 @@ export async function GET(request: Request) {
       });
     }
 
-    // Residents see only their own feedback for this incident
+    if (
+      incidentId !== null &&
+      (!Number.isInteger(incidentId) || incidentId < 1)
+    ) {
+      return NextResponse.json(
+        { success: false, message: "A valid incident_id query parameter is required." },
+        { status: 400 }
+      );
+    }
+
+    if (auth.role === "officer") {
+      const result = await pool.query(
+        `SELECT
+           f.feedback_id,
+           f.incident_id,
+           i.title AS incident_title,
+           i.status AS incident_status,
+           c.category_name,
+           d.department_name,
+           reporter.full_name AS submitted_by_name,
+           f.rating,
+           f.comment,
+           f.submitted_at
+         FROM feedback f
+         JOIN incidents i ON i.incident_id = f.incident_id
+         JOIN categories c ON c.category_id = i.category_id
+         JOIN departments d ON d.department_id = c.department_id
+         JOIN users reporter ON reporter.user_id = f.submitted_by
+         JOIN users officer ON officer.auth_account_id = $1 AND officer.is_active = true
+         WHERE ($2::bigint IS NULL OR f.incident_id = $2)
+           AND EXISTS (
+             SELECT 1
+             FROM assignments assignment
+             WHERE assignment.incident_id = i.incident_id
+               AND assignment.officer_id = officer.user_id
+           )
+         ORDER BY f.submitted_at DESC`,
+        [auth.userId, incidentId]
+      );
+      return NextResponse.json({
+        success: true,
+        count: result.rows.length,
+        feedback: result.rows,
+      });
+    }
+
+    // Residents see their own feedback, optionally filtered to one incident.
     const result = await pool.query(
       `SELECT
          f.feedback_id,
          f.incident_id,
-         f.submitted_by,
+         i.title AS incident_title,
+         i.status AS incident_status,
+         c.category_name,
+         d.department_name,
+         u.full_name AS submitted_by_name,
          f.rating,
          f.comment,
          f.submitted_at
        FROM feedback f
+       JOIN incidents i ON i.incident_id = f.incident_id
+       JOIN categories c ON c.category_id = i.category_id
+       JOIN departments d ON d.department_id = c.department_id
        JOIN users u ON f.submitted_by = u.user_id
-       WHERE f.incident_id = $1
-         AND u.auth_account_id = $2`,
+       WHERE ($1::bigint IS NULL OR f.incident_id = $1)
+         AND u.auth_account_id = $2
+       ORDER BY f.submitted_at DESC`,
       [incidentId, auth.userId]
     );
     return NextResponse.json({
@@ -82,6 +181,7 @@ export async function GET(request: Request) {
 // One submission per (incident, user) pair — enforced by DB UNIQUE constraint.
 export async function POST(request: Request) {
   await ensureFeedbackTable();
+  await ensureNotificationsTable();
 
   const auth = await authenticateRequest(request, ["resident"]);
   if (auth instanceof NextResponse) return auth;
@@ -162,6 +262,24 @@ export async function POST(request: Request) {
        VALUES ($1, $2, $3, $4)
        RETURNING feedback_id, incident_id, submitted_by, rating, comment, submitted_at`,
       [incidentId, userId, rating, comment || null]
+    );
+
+    // Notify all active admins and the assigned officer
+    await client.query(
+      `INSERT INTO notifications (recipient_id, feedback_id, type)
+       SELECT recipient.user_id, $1, 'feedback'
+       FROM (
+         SELECT user_id
+         FROM users
+         WHERE role = 'admin'
+           AND is_active = true
+         UNION
+         SELECT officer_id AS user_id
+         FROM assignments
+         WHERE incident_id = $2
+       ) recipient
+       ON CONFLICT (recipient_id, feedback_id) DO NOTHING`,
+      [result.rows[0].feedback_id, incidentId]
     );
 
     await client.query("COMMIT");

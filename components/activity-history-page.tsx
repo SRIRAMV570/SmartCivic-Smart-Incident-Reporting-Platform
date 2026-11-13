@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import FeedbackModal from "@/components/feedback-modal";
+import ComplaintModal from "@/components/complaint-modal";
 
 type HistoryRecord = {
   history_id: number;
@@ -31,6 +32,13 @@ type FeedbackState = {
   activeIncidentTitle: string;
 };
 
+type ComplaintSummary = {
+  complaint_id: number | string;
+  incident_id: number | string;
+  next_complaint_at: string;
+  can_complain_again: boolean;
+};
+
 export default function ActivityHistoryClientPage() {
   const pathname = usePathname();
   const router = useRouter();
@@ -43,6 +51,8 @@ export default function ActivityHistoryClientPage() {
     activeIncidentId: null,
     activeIncidentTitle: "",
   });
+  const [complaintIncident, setComplaintIncident] = useState<{ id: number; title: string } | null>(null);
+  const [complaintsByIncident, setComplaintsByIncident] = useState<Map<number, ComplaintSummary>>(new Map());
 
   useEffect(() => {
     let sessionExpired = false;
@@ -88,8 +98,22 @@ export default function ActivityHistoryClientPage() {
         const resolvedRole: string = accountData.role;
         setAccount({ ...accountData.account, role: accountData.role });
 
-        // For residents, load which resolved incidents already have feedback
+        // For residents, load which resolved incidents already have feedback and complaints
         if (resolvedRole === "resident") {
+          const compRes = await fetch("/api/complaints", { cache: "no-store" });
+          const compData = await compRes.json();
+          if (!compRes.ok || !compData.success) {
+            throw new Error(compData.message || "Unable to load your complaints.");
+          }
+          const complaintMap = new Map<number, ComplaintSummary>();
+          for (const complaint of compData.complaints as ComplaintSummary[]) {
+            const incidentId = Number(complaint.incident_id);
+            if (!complaintMap.has(incidentId)) {
+              complaintMap.set(incidentId, complaint);
+            }
+          }
+          setComplaintsByIncident(complaintMap);
+
           const resolvedIncidentIds = Array.from(
             new Set(
               (data.history as HistoryRecord[])
@@ -197,6 +221,27 @@ export default function ActivityHistoryClientPage() {
           onSubmitted={onFeedbackSubmitted}
         />
       )}
+      {complaintIncident !== null && (
+        <ComplaintModal
+          incidentId={complaintIncident.id}
+          incidentTitle={complaintIncident.title}
+          onClose={() => setComplaintIncident(null)}
+          onSubmitted={() => {
+            const id = complaintIncident.id;
+            setComplaintsByIncident((current) => {
+              const next = new Map(current);
+              next.set(id, {
+                complaint_id: "pending",
+                incident_id: id,
+                can_complain_again: false,
+                next_complaint_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              });
+              return next;
+            });
+            setComplaintIncident(null);
+          }}
+        />
+      )}
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-icon">S</span>
@@ -219,6 +264,9 @@ export default function ActivityHistoryClientPage() {
             <Link className="nav-item" href="/admin/departments">
               <span>⌖</span> Departments
             </Link>
+            <Link className="nav-item" href="/admin/feedback">
+              <span>★</span> Civic Feedback
+            </Link>
           </>
         )}
 
@@ -229,6 +277,12 @@ export default function ActivityHistoryClientPage() {
         >
           <span>◷</span> {account?.role === "admin" ? "Activity history" : "My progress"}
         </Link>
+
+        {account?.role === "resident" && (
+          <Link className="nav-item" href="/civic/complaints-feedback">
+            <span>⚠</span> Complaints & feedback
+          </Link>
+        )}
 
         <div className="sidebar-bottom">
           <div className="avatar">{account?.role === "admin" ? "AD" : "CV"}</div>
@@ -428,11 +482,15 @@ export default function ActivityHistoryClientPage() {
 
                       {account?.role === "resident" && (() => {
                         const incidentLatestStatus = latestStatusByIncident.get(item.incident_id);
-                        const isResolved = incidentLatestStatus === "resolved";
+                        const isClosed = ["resolved", "rejected"].includes(
+                          incidentLatestStatus ?? ""
+                        );
                         const alreadySubmitted = feedbackState.submitted.has(item.incident_id);
+                        const complaint = complaintsByIncident.get(item.incident_id);
+                        const canComplainAgain = !complaint || complaint.can_complain_again;
                         return (
                           <td>
-                            {isResolved && !alreadySubmitted && (
+                            {incidentLatestStatus === "resolved" && !alreadySubmitted && (
                               <button
                                 type="button"
                                 className="feedback-rate-btn"
@@ -443,10 +501,47 @@ export default function ActivityHistoryClientPage() {
                                 ★ Rate it
                               </button>
                             )}
-                            {isResolved && alreadySubmitted && (
+                            {incidentLatestStatus === "resolved" && alreadySubmitted && (
                               <span className="feedback-submitted-badge">
                                 ✓ Rated
                               </span>
+                            )}
+                            {!isClosed && (
+                              <button
+                                type="button"
+                                disabled={!canComplainAgain}
+                                onClick={() =>
+                                  setComplaintIncident({
+                                    id: item.incident_id,
+                                    title: item.incident_title,
+                                  })
+                                }
+                                style={{
+                                  padding: "4px 8px",
+                                  borderRadius: "6px",
+                                  border: "1px solid #fca5a5",
+                                  background: complaint ? "#fef2f2" : "#fff",
+                                  color: complaint && !canComplainAgain ? "#7f1d1d" : "#b91c1c",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  cursor: canComplainAgain ? "pointer" : "not-allowed",
+                                  opacity: canComplainAgain ? 1 : 0.9,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                {canComplainAgain
+                                  ? complaint
+                                    ? "⚠️ Complain again"
+                                    : "⚠️ Complain"
+                                  : `✓ Complained · again after ${new Date(complaint.next_complaint_at).toLocaleString("en-IN", {
+                                      day: "2-digit",
+                                      month: "short",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}`}
+                              </button>
                             )}
                           </td>
                         );

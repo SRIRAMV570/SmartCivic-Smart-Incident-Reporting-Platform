@@ -149,11 +149,19 @@ export default function PortalGuard({ role, children }: PortalGuardProps) {
               <Link className="text-sm text-slate-700 hover:text-blue-700" href="/admin/activity-history">
                 Activity history
               </Link>
+              <Link className="text-sm font-medium text-blue-700 hover:underline flex items-center gap-1" href="/admin/feedback">
+                <span>★</span> Civic Feedback & Complaints
+              </Link>
             </>
           ) : (
-            <Link className="text-sm text-slate-700 hover:text-blue-700" href="/officer">
-              Assigned incidents
-            </Link>
+            <>
+              <Link className="text-sm text-slate-700 hover:text-blue-700" href="/officer">
+                Assigned incidents
+              </Link>
+              <Link className="text-sm text-slate-700 hover:text-blue-700" href="/officer/complaints-feedback">
+                Complaints & feedback
+              </Link>
+            </>
           )}
           <button
             className="rounded-lg border px-3 py-2 text-sm text-slate-700 disabled:opacity-50"

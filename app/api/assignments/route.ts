@@ -10,10 +10,18 @@ export async function POST(request: Request) {
   const client = await pool.connect();
 
   try {
-    const body = await request.json();
+    const body: unknown = await request.json();
+    const values =
+      body && typeof body === "object"
+        ? (body as Record<string, unknown>)
+        : {};
 
-    const incidentId = Number(body.incident_id);
-    const officerId = Number(body.officer_id);
+    const incidentId = Number(values.incident_id);
+    const officerIds = Array.isArray(values.officer_ids)
+      ? values.officer_ids.map(Number)
+      : values.officer_id === undefined
+        ? []
+        : [Number(values.officer_id)];
     const assigner = await client.query(
       "SELECT user_id FROM users WHERE auth_account_id = $1",
       [auth.userId]
@@ -22,11 +30,15 @@ export async function POST(request: Request) {
     if (
       !Number.isInteger(incidentId) ||
       incidentId <= 0 ||
-      !Number.isInteger(officerId) ||
-      officerId <= 0
+      officerIds.length === 0 ||
+      officerIds.some((officerId) => !Number.isInteger(officerId) || officerId <= 0) ||
+      new Set(officerIds).size !== officerIds.length
     ) {
       return NextResponse.json(
-        { success: false, message: "Valid incident and officer IDs are required." },
+        {
+          success: false,
+          message: "A valid incident and one or more unique officer IDs are required.",
+        },
         { status: 400 }
       );
     }
@@ -55,21 +67,36 @@ export async function POST(request: Request) {
       );
     }
     const oldStatus = incident.rows[0].status as string;
-    if (!["pending", "assigned"].includes(oldStatus)) {
+    if (oldStatus !== "pending") {
       await client.query("ROLLBACK");
       return NextResponse.json(
         {
           success: false,
-          message: "Incidents can only be assigned or reassigned before work starts.",
+          message: "Only pending incidents can be assigned.",
         },
         { status: 409 }
       );
     }
 
-    const officer = await client.query(
+    const existingAssignment = await client.query(
+      "SELECT 1 FROM assignments WHERE incident_id = $1",
+      [incidentId]
+    );
+    if (existingAssignment.rowCount !== 0) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        {
+          success: false,
+          message: "This incident already has an assigned officer.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const officers = await client.query(
       `SELECT user_id, full_name, department_id
        FROM users
-       WHERE user_id = $1
+       WHERE user_id = ANY($1::bigint[])
          AND role = 'officer'
          AND is_active = true
          AND department_id = (
@@ -80,29 +107,26 @@ export async function POST(request: Request) {
            WHERE category.category_id = $2
              AND department.is_active = true
          )`,
-      [officerId, incident.rows[0].category_id]
+      [officerIds, incident.rows[0].category_id]
     );
 
-    if (officer.rowCount === 0) {
+    if (officers.rowCount !== officerIds.length) {
       await client.query("ROLLBACK");
       return NextResponse.json(
         {
           success: false,
-          message: "Choose an officer from the incident's department.",
+          message: "Choose active officers from the incident's department.",
         },
         { status: 400 }
       );
     }
 
-    await client.query(
-      "DELETE FROM assignments WHERE incident_id = $1",
-      [incidentId]
-    );
     const assignment = await client.query(
       `INSERT INTO assignments (incident_id, officer_id, assigned_by)
-       VALUES ($1, $2, $3)
+       SELECT $1, selected.officer_id, $3
+       FROM unnest($2::bigint[]) AS selected(officer_id)
        RETURNING *`,
-      [incidentId, officerId, assignedBy]
+      [incidentId, officerIds, assignedBy]
     );
 
     await client.query(
@@ -119,7 +143,9 @@ export async function POST(request: Request) {
         incidentId,
         oldStatus,
         assignedBy,
-        `${oldStatus === "assigned" ? "Reassigned" : "Assigned"} to ${officer.rows[0].full_name}`,
+        `Assigned to ${officers.rows
+          .map((officer: { full_name: string }) => officer.full_name)
+          .join(", ")}`.slice(0, 1000),
       ]
     );
 
@@ -128,8 +154,9 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       message: "Incident assigned successfully.",
-      assignment: assignment.rows[0],
-      officer: officer.rows[0],
+      assignments: assignment.rows,
+      officers: officers.rows,
+      officer: officers.rows[0],
     });
   } catch (error) {
     await client.query("ROLLBACK");
