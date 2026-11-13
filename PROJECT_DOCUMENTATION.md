@@ -11,7 +11,9 @@ The system is designed around a role-based workflow:
 - Residents can create, view, and manage their own reports.
 - Residents can review their complaint and feedback history, submit a follow-up complaint after 24 hours without incident status progress, and complain immediately if an incident's status regresses.
 - Administrators can review reports, assign one or more officers to pending incidents, manage departments, and track activity history.
+- Administrators receive complaint and feedback alerts; marking an alert read removes it from the unread notification panel while the underlying record remains in the archive.
 - Department officers/managers can search Qdrant-ranked similar incidents within their authorized scope, view assigned incidents, and update their status.
+- Officers can review complaints and feedback for incidents assigned to them.
 
 ## 2. Product goals
 
@@ -34,7 +36,8 @@ Residents can:
 - view their own incidents and status history
 - edit or delete reports before work begins
 - find related issues using similarity search
-- file complaints about unresolved reports and review submitted complaints and feedback at any time
+- file complaints about unresolved reports, repeat a complaint after 24 hours without status progress, or complain immediately after a status regression
+- review submitted complaints and feedback at any time
 
 ### Admin portal
 
@@ -47,6 +50,7 @@ Administrators can:
 - manage departments and categories
 - monitor activity history
 - review resident complaints and feedback in the civic feedback page
+- see unread alerts in Incident Management while keeping read items in the archive
 - grant or review access for officers and managers
 
 ### Officer / department portal
@@ -130,6 +134,8 @@ The primary relational schema includes:
 - `status_history` for change tracking across report states
 - `assignments` for officer assignment metadata
 - `feedback` for resident feedback on resolved incidents
+- `complaints` for resident escalations about incident progress
+- `notifications` for unread feedback and complaint alerts delivered to administrators and assigned officers
 
 The SQL migrations in `db/migrations/` create and initialize these tables in order, with seeded default categories and departments.
 
@@ -142,7 +148,8 @@ The typical incident lifecycle follows this flow:
 3. The report can be assigned to a department officer.
 4. The officer updates the case status as work proceeds.
 5. Status changes are recorded in `status_history` for traceability.
-6. A citizen may give feedback once the incident is resolved, if the feature is enabled in the reporting flow.
+6. A citizen may give feedback once the incident is resolved.
+7. A citizen may complain about an unresolved incident. Repeat complaints are limited to once per 24 hours unless the incident status regresses, which permits an immediate complaint.
 
 Important status values include:
 
@@ -228,6 +235,9 @@ The project expects migrations to be applied in order:
 4. `004_project_features.sql`
 5. `005_vector_search_outbox.sql`
 6. `006_feedback.sql`
+7. `007_notifications.sql`
+8. `008_backfill_feedback_notifications.sql`
+9. `009_complaints.sql`
 
 Example:
 
@@ -238,9 +248,12 @@ psql "$env:DATABASE_URL" -f db\migrations\003_department_officer_managers.sql
 psql "$env:DATABASE_URL" -f db\migrations\004_project_features.sql
 psql "$env:DATABASE_URL" -f db\migrations\005_vector_search_outbox.sql
 psql "$env:DATABASE_URL" -f db\migrations\006_feedback.sql
+psql "$env:DATABASE_URL" -f db\migrations\007_notifications.sql
+psql "$env:DATABASE_URL" -f db\migrations\008_backfill_feedback_notifications.sql
+psql "$env:DATABASE_URL" -f db\migrations\009_complaints.sql
 ```
 
-These scripts create the data model and seed initial departments, categories, and officer identities.
+These scripts create the data model and seed initial departments, categories, and officer identities. Migration 006 adds resident feedback; migrations 007 and 008 add notifications and backfill alerts for existing feedback; migration 009 adds complaints and extends notifications to support complaint alerts.
 
 ## 11. Roles and access model
 
@@ -273,6 +286,8 @@ The app includes API endpoints in `app/api/` for:
 - officer assignment
 - activity history
 - feedback submission
+- complaint submission and history
+- notification retrieval and read-state updates
 
 This keeps the UI thin and centralizes business logic in route handlers and shared lib modules.
 
@@ -314,7 +329,16 @@ The application includes several important safeguards:
 - Similarity search is best-effort and can retry indexing automatically when the vector service becomes available.
 - The project uses PostgreSQL as the source of truth for transactional reporting and uses Qdrant as a derived search index.
 
-## 17. Summary
+## 17. Sri Ram V implementation contributions
+
+- Implemented the feedback flow for resolved incidents, including resident star ratings and optional comments, one-submission-per-incident enforcement, and administrator retrieval.
+- Added migrations 006 through 009 for feedback, feedback notifications, notification backfill, and complaints.
+- Implemented complaint submission with a 24-hour cooldown when incident status has not progressed; a status regression permits an immediate follow-up complaint, while resolved and rejected incidents remain closed.
+- Added complaint and feedback history for residents and officers, with officer access limited to assigned incidents.
+- Added notifications for administrators and assigned officers. The admin panel displays unread alerts, marks them read, and keeps feedback and complaints available in the archive.
+- Added Qdrant-based incident search to administrator and officer workflows, and supported assigning multiple eligible officers to pending incidents.
+
+## 18. Summary
 
 SmartCivic is a practical civic operations platform that blends standard relational workflows with modern vector-based search. The system balances resident usability, administrative control, and operational traceability while preserving resilience when the vector store is temporarily unavailable.
 
