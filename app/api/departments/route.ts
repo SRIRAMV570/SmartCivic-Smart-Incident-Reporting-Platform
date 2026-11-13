@@ -134,6 +134,12 @@ export async function POST(request: Request) {
            RETURNING department_id, department_name`,
           [name]
         );
+        const category = await client.query(
+          `INSERT INTO categories (category_name, department_id)
+           VALUES ($1, $2)
+           RETURNING category_id, category_name, department_id`,
+          [name, result.rows[0].department_id]
+        );
         const passwordHash = await bcrypt.hash(managerPassword, 12);
         const account = await client.query(
           `INSERT INTO auth_accounts (full_name, email, password_hash)
@@ -150,7 +156,11 @@ export async function POST(request: Request) {
         await client.query("COMMIT");
 
         return NextResponse.json(
-          { success: true, department: result.rows[0] },
+          {
+            success: true,
+            department: result.rows[0],
+            category: category.rows[0],
+          },
           { status: 201 }
         );
       } catch (error) {
@@ -162,7 +172,11 @@ export async function POST(request: Request) {
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "23505") {
         return NextResponse.json(
-          { success: false, message: "That department name or manager email is already in use." },
+          {
+            success: false,
+            message:
+              "That department name or manager email is already in use. A category with the department name must also be unique.",
+          },
           { status: 409 }
         );
       }

@@ -5,6 +5,7 @@ import {
 } from "@/lib/incident-embeddings";
 
 const COLLECTION = "smartcivic_incidents";
+export const INCIDENT_SIMILARITY_THRESHOLD = 0.08;
 
 type IncidentText = {
   incident_id: string | number;
@@ -12,6 +13,14 @@ type IncidentText = {
   description: string;
   location: string;
 };
+
+function getPointId(incidentId: string | number) {
+  const pointId = Number(incidentId);
+  if (!Number.isSafeInteger(pointId) || pointId < 1) {
+    throw new Error("Incident ID cannot be represented as a Qdrant point ID.");
+  }
+  return pointId;
+}
 
 function getQdrantConfig() {
   const url = process.env.QDRANT_URL ?? "http://localhost:6333";
@@ -74,29 +83,64 @@ async function ensureCollection() {
 }
 
 export async function upsertIncidentVector(incident: IncidentText) {
+  await upsertIncidentVectors([incident]);
+}
+
+export async function upsertIncidentVectors(incidents: IncidentText[]) {
+  if (incidents.length === 0) return;
   await ensureCollection();
-  const pointId = Number(incident.incident_id);
-  if (!Number.isSafeInteger(pointId) || pointId < 1) {
-    throw new Error("Incident ID cannot be represented as a Qdrant point ID.");
-  }
 
   await qdrantRequest(`/collections/${COLLECTION}/points?wait=true`, {
     method: "PUT",
     body: JSON.stringify({
-      points: [
-        {
-          id: pointId,
-          vector: embedIncidentText(
-            `${incident.title} ${incident.description} ${incident.location}`
-          ),
-          payload: {
-            incident_id: String(incident.incident_id),
-            embedding_model: INCIDENT_EMBEDDING_MODEL,
-          },
+      points: incidents.map((incident) => ({
+        id: getPointId(incident.incident_id),
+        vector: embedIncidentText(
+          `${incident.title} ${incident.description} ${incident.location}`
+        ),
+        payload: {
+          incident_id: String(incident.incident_id),
+          embedding_model: INCIDENT_EMBEDDING_MODEL,
         },
-      ],
+      })),
     }),
   });
+}
+
+export async function getIndexedIncidentIds(incidentIds: number[]) {
+  if (incidentIds.length === 0) return new Set<number>();
+  await ensureCollection();
+
+  const indexedIds = new Set<number>();
+  const batchSize = 500;
+  for (let offset = 0; offset < incidentIds.length; offset += batchSize) {
+    const batch = incidentIds.slice(offset, offset + batchSize);
+    const result = await qdrantRequest(
+      `/collections/${COLLECTION}/points`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ids: batch,
+          with_payload: false,
+          with_vector: false,
+        }),
+      }
+    );
+
+    const points =
+      result && typeof result === "object" && "result" in result
+        ? result.result
+        : null;
+    if (!Array.isArray(points)) {
+      throw new Error("Qdrant returned an invalid point-lookup response.");
+    }
+
+    for (const point of points as Array<{ id: number }>) {
+      indexedIds.add(Number(point.id));
+    }
+  }
+
+  return indexedIds;
 }
 
 export async function deleteIncidentVector(incidentId: number) {
@@ -122,6 +166,7 @@ export async function searchIncidentVectors(
       body: JSON.stringify({
         vector: embedIncidentText(query),
         filter: { must: [{ has_id: incidentIds }] },
+        score_threshold: INCIDENT_SIMILARITY_THRESHOLD,
         limit,
         with_payload: true,
         with_vectors: false,
@@ -137,8 +182,14 @@ export async function searchIncidentVectors(
     throw new Error("Qdrant returned an invalid similarity-search response.");
   }
 
-  return points.map((point: { id: number; score: number }) => ({
-    id: point.id,
-    score: point.score,
-  }));
+  return points
+    .filter(
+      (point: { score: number }) =>
+        Number.isFinite(point.score) &&
+        point.score >= INCIDENT_SIMILARITY_THRESHOLD
+    )
+    .map((point: { id: number; score: number }) => ({
+      id: point.id,
+      score: point.score,
+    }));
 }

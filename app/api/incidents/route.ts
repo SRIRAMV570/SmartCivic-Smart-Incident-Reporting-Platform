@@ -26,12 +26,27 @@ export async function GET(request: Request) {
         c.category_name,
         d.department_id,
         d.department_name,
-        u.full_name AS reported_by
+        u.full_name AS reported_by,
+        EXISTS (
+          SELECT 1
+          FROM assignments assignment
+          WHERE assignment.incident_id = i.incident_id
+        ) AS is_assigned,
+        COALESCE(
+          (
+            SELECT array_agg(assigned_officer.full_name::text ORDER BY assigned_officer.full_name)
+            FROM assignments assignment
+            JOIN users assigned_officer
+              ON assigned_officer.user_id = assignment.officer_id
+            WHERE assignment.incident_id = i.incident_id
+          ),
+          ARRAY[]::text[]
+        ) AS assigned_officers
       FROM incidents i
       JOIN categories c ON i.category_id = c.category_id
       JOIN departments d ON c.department_id = d.department_id
       JOIN users u ON i.reported_by = u.user_id
-      WHERE i.status <> 'resolved'
+      WHERE i.status NOT IN ('resolved', 'rejected')
         AND ${searchFilter}
       ORDER BY
         CASE i.priority
@@ -64,7 +79,7 @@ export async function GET(request: Request) {
            JOIN users reporter ON i.reported_by = reporter.user_id
            JOIN users officer ON officer.auth_account_id = $1
            WHERE d.department_id = officer.department_id
-             AND i.status <> 'resolved'
+             AND i.status NOT IN ('resolved', 'rejected')
              AND ($2::text = '' OR i.search_vector @@ websearch_to_tsquery('english', $2))
              AND (
                officer.is_manager = true
@@ -105,7 +120,7 @@ export async function GET(request: Request) {
            JOIN departments d ON c.department_id = d.department_id
            JOIN users u ON i.reported_by = u.user_id
            WHERE u.auth_account_id = $2
-             AND i.status <> 'resolved'
+             AND i.status NOT IN ('resolved', 'rejected')
              AND ${searchFilter}
            ORDER BY i.created_at DESC`,
           [searchTerm, auth.userId]
